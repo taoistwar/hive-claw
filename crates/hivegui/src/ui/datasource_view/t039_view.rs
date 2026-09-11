@@ -13,12 +13,12 @@
 
 use std::sync::Arc;
 
-use gpui::{
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::{
     Context, Entity, FocusHandle, Focusable, Hsla, KeyDownEvent, Render, ScrollHandle,
     SharedString, Window, div, prelude::*, px,
 };
-use gpui_component::ActiveTheme as _;
-use gpui_component::input::{Input, InputState};
 
 use crate::datasource::data_source_store::{
     DataSourceFilter, DataSourcePage, DataSourceRecord, DataSourceStore, DataSourceViewMode,
@@ -226,7 +226,7 @@ impl DatasourceListView {
 }
 
 impl Focusable for DatasourceListView {
-    fn focus_handle(&self, _cx: &gpui::App) -> FocusHandle {
+    fn focus_handle(&self, _cx: &gpui_kit::App) -> FocusHandle {
         self.list_focus.clone()
     }
 }
@@ -294,7 +294,7 @@ impl Render for DatasourceListView {
                             .child(
                                 div()
                                     .text_size(px(16.0))
-                                    .font_weight(gpui::FontWeight::SEMIBOLD)
+                                    .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                                     .child("数据源"),
                             )
                             .child(
@@ -378,7 +378,7 @@ fn paging_button(
     enabled: bool,
     foreground: Hsla,
     border: Hsla,
-    on_activate: impl Fn(&mut Window, &mut gpui::App) + 'static,
+    on_activate: impl Fn(&mut Window, &mut gpui_kit::App) + 'static,
 ) -> impl IntoElement {
     div()
         .id(id)
@@ -416,7 +416,7 @@ fn render_mode(
     danger: Hsla,
     list_scroll: ScrollHandle,
     cx: &mut Context<DatasourceListView>,
-) -> gpui::AnyElement {
+) -> gpui_kit::AnyElement {
     match mode {
         DataSourceViewMode::List => render_list(
             records,
@@ -497,7 +497,7 @@ fn render_list(
     muted: Hsla,
     muted_foreground: Hsla,
     _list_scroll: ScrollHandle,
-) -> gpui::AnyElement {
+) -> gpui_kit::AnyElement {
     let mut list = div()
         .flex_1()
         .flex()
@@ -563,7 +563,7 @@ fn render_row(
     border: Hsla,
     muted: Hsla,
     muted_foreground: Hsla,
-) -> gpui::AnyElement {
+) -> gpui_kit::AnyElement {
     div()
         .id(SharedString::from(format!("datasource-row-{}", record.id)))
         .flex()

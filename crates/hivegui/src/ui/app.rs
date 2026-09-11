@@ -1,13 +1,12 @@
-use std::{path::Path, sync::Arc};
-
-use gpui::{
-    App, Bounds, Context, CursorStyle, Entity, Hsla, MouseButton, SharedString, Window,
-    WindowBounds, WindowDecorations, WindowOptions, div, prelude::*, px, size,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _,
     theme::{self, Theme, ThemeRegistry},
 };
+use gpui_kit::{
+    App, Bounds, Context, CursorStyle, Entity, Hsla, MouseButton, SharedString, Window,
+    WindowBounds, WindowDecorations, WindowOptions, div, prelude::*, px, size,
+};
+use std::{path::Path, sync::Arc};
 
 use crate::agent::local_agent::LocalAgentRuntime;
 use crate::config::Config;
@@ -111,7 +110,7 @@ impl AppRoute {
     }
 }
 
-impl gpui::Global for HiveGuiAppState {}
+impl gpui_kit::Global for HiveGuiAppState {}
 
 impl HiveGuiAppState {
     /// Returns the canonical default route. New routes must be added
@@ -230,7 +229,7 @@ impl AccessKitLabelRegistry {
     }
 }
 
-impl gpui::Global for AccessKitLabelRegistry {}
+impl gpui_kit::Global for AccessKitLabelRegistry {}
 
 fn install_app_globals(cx: &mut App, state: HiveGuiAppState) {
     cx.set_global(state);
@@ -263,7 +262,7 @@ pub fn run(config: Config) -> anyhow::Result<()> {
     let default_root = Store::default_db_path();
     let store = tokio::runtime::Handle::current()
         .block_on(open_store_after_restore_recovery(&default_root))?;
-    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    let app = gpui_kit::application().with_assets(gpui_kit_assets::Assets);
 
     // T079 ③ startup replay: recover any plugin install operation interrupted
     // by a crash, then drain pending artifact GC so orphaned staging bytes and
@@ -319,7 +318,7 @@ pub fn run(config: Config) -> anyhow::Result<()> {
 
     app.run(move |cx: &mut App| {
         theme::init(cx);
-        gpui_component::init(cx);
+        gpui_kit::component::init(cx);
         theme_contrast::install(cx);
 
         // Load custom themes
@@ -358,7 +357,7 @@ pub fn run(config: Config) -> anyhow::Result<()> {
                         execution_event_collector.clone(),
                     )
                 });
-                cx.new(|cx| gpui_component::Root::new(inner, window, cx))
+                cx.new(|cx| gpui_kit::component::Root::new(inner, window, cx))
             },
         )
         .expect("window should open");
@@ -484,7 +483,7 @@ impl Render for RootView {
                 div().flex().flex_row().items_center().child(
                     div()
                         .text_size(px(14.0))
-                        .font_weight(gpui::FontWeight::BOLD)
+                        .font_weight(gpui_kit::FontWeight::BOLD)
                         .child("HiveClaw"),
                 ),
             )
@@ -545,7 +544,7 @@ fn shell_layout(
     body: impl IntoElement,
     statusbar: impl IntoElement,
     colors: ShellThemeColors,
-) -> gpui::Div {
+) -> gpui_kit::Div {
     div()
         .relative()
         .size_full()
@@ -582,7 +581,7 @@ fn wbtn(
     ac: Hsla,
     tc: Hsla,
     htc: Hsla,
-    f: impl Fn(&mut Window, &gpui::MouseDownEvent, &mut gpui::App) + 'static,
+    f: impl Fn(&mut Window, &gpui_kit::MouseDownEvent, &mut gpui_kit::App) + 'static,
 ) -> impl IntoElement {
     div()
         .id(SharedString::from(format!("wbtn-{icon}")))
@@ -602,11 +601,11 @@ fn wbtn(
 
 #[cfg(test)]
 mod tests {
-    use gpui::{
+    use gpui_kit::component::theme::Theme;
+    use gpui_kit::{
         Context, IntoElement, Render, TestAppContext, VisualTestContext, Window, div, hsla,
         prelude::*, px, size,
     };
-    use gpui_component::theme::Theme;
 
     use super::{shell_layout, shell_theme_colors};
 
@@ -625,7 +624,7 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn main_content_stays_between_titlebar_and_statusbar(cx: &mut TestAppContext) {
         let window = cx.open_window(size(px(1200.0), px(700.0)), |_, _| ShellLayoutTestView);
         cx.run_until_parked();

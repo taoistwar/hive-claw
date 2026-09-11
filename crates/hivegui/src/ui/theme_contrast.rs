@@ -1,7 +1,7 @@
 use std::rc::Rc;
 
-use gpui::{App, Hsla};
-use gpui_component::theme::{Theme, ThemeConfig, ThemeMode, ThemeRegistry};
+use gpui_kit::component::theme::{Theme, ThemeConfig, ThemeMode, ThemeRegistry};
+use gpui_kit::{App, Hsla};
 
 const TEXT_CONTRAST: f32 = 4.52;
 const GRAPHIC_CONTRAST: f32 = 3.02;
@@ -38,9 +38,9 @@ fn apply_to_active_theme(cx: &mut App) {
 
 fn accessible_config(config: &Rc<ThemeConfig>) -> Rc<ThemeConfig> {
     let defaults = if config.mode == ThemeMode::Dark {
-        gpui_component::theme::ThemeColor::dark()
+        gpui_kit::component::theme::ThemeColor::dark()
     } else {
-        gpui_component::theme::ThemeColor::light()
+        gpui_kit::component::theme::ThemeColor::light()
     };
     let mut theme = Theme::from(defaults.as_ref());
     theme.apply_config(config);
@@ -437,7 +437,7 @@ fn relative_luminance(color: [f32; 3]) -> f32 {
     0.2126 * red + 0.7152 * green + 0.0722 * blue
 }
 
-fn color_string(color: Hsla) -> gpui::SharedString {
+fn color_string(color: Hsla) -> gpui_kit::SharedString {
     let color = color.to_rgb();
     format!(
         "#{:02x}{:02x}{:02x}{:02x}",

@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
-use gpui::{
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::{
     ClipboardItem, Context, CursorStyle, Entity, Hsla, MouseButton, ScrollHandle, SharedString,
     Window, div, prelude::*, px,
 };
-use gpui_component::ActiveTheme as _;
-use gpui_component::input::{Input, InputEvent, InputState};
 use tracing::info;
 
 use crate::datasource::mysql_client::{IdentifierKind, MysqlIdentifier};
@@ -38,7 +38,7 @@ struct ViewerPalette {
 }
 
 impl ViewerPalette {
-    fn current(cx: &gpui::App) -> Self {
+    fn current(cx: &gpui_kit::App) -> Self {
         let theme = cx.theme();
         Self {
             background: theme.background,
@@ -95,7 +95,7 @@ struct ColumnResize {
     start_width: f32,
 }
 
-impl gpui::Global for ColumnResize {}
+impl gpui_kit::Global for ColumnResize {}
 
 #[derive(Clone)]
 struct PageCache {
@@ -1129,7 +1129,7 @@ impl TableViewer {
     fn render_sub_tabs(
         &self,
         active_tab: &TableTab,
-        this: gpui::WeakEntity<Self>,
+        this: gpui_kit::WeakEntity<Self>,
         palette: ViewerPalette,
     ) -> impl IntoElement {
         div()
@@ -1171,7 +1171,7 @@ impl TableViewer {
         label: SharedString,
         active: bool,
         tab: TableTab,
-        this: gpui::WeakEntity<Self>,
+        this: gpui_kit::WeakEntity<Self>,
         palette: ViewerPalette,
     ) -> impl IntoElement {
         div()
@@ -1203,7 +1203,7 @@ impl TableViewer {
     fn render_columns(
         &self,
         t: &OpenTable,
-        this: gpui::WeakEntity<Self>,
+        this: gpui_kit::WeakEntity<Self>,
         palette: ViewerPalette,
     ) -> impl IntoElement {
         let column_labels = ["列名", "类型", "可空", "主键", "注释"];
@@ -1422,7 +1422,7 @@ impl TableViewer {
     fn render_data_tab(
         &self,
         t: &OpenTable,
-        this: gpui::WeakEntity<Self>,
+        this: gpui_kit::WeakEntity<Self>,
         palette: ViewerPalette,
     ) -> impl IntoElement {
         info!("[DataTab] render_data_tab called, table: {}", t.name);
@@ -1531,7 +1531,7 @@ impl TableViewer {
         cols: &[SharedString],
         row_data: &[Vec<Option<SharedString>>],
         t: &OpenTable,
-        this: gpui::WeakEntity<Self>,
+        this: gpui_kit::WeakEntity<Self>,
         palette: ViewerPalette,
     ) -> impl IntoElement {
         let num_cols = cols.len();
@@ -1743,7 +1743,7 @@ impl TableViewer {
     fn render_value_viewer(
         &self,
         t: &OpenTable,
-        this: gpui::WeakEntity<Self>,
+        this: gpui_kit::WeakEntity<Self>,
         palette: ViewerPalette,
     ) -> impl IntoElement {
         let Some(ref data) = t.table_data else {
@@ -1866,7 +1866,7 @@ impl TableViewer {
     fn render_pagination(
         &self,
         t: &OpenTable,
-        this: gpui::WeakEntity<Self>,
+        this: gpui_kit::WeakEntity<Self>,
         palette: ViewerPalette,
     ) -> impl IntoElement {
         let current_page = t.current_page();
@@ -2088,7 +2088,7 @@ impl TableViewer {
         &self,
         size: i64,
         current_size: i64,
-        this: gpui::WeakEntity<Self>,
+        this: gpui_kit::WeakEntity<Self>,
         palette: ViewerPalette,
     ) -> impl IntoElement {
         let is_selected = size == current_size;
@@ -2139,7 +2139,7 @@ impl TableViewer {
         &self,
         col_idx: usize,
         start_width: f32,
-        this: gpui::WeakEntity<Self>,
+        this: gpui_kit::WeakEntity<Self>,
     ) -> impl IntoElement {
         div()
             .id(format!("resize-handle-{col_idx}"))
@@ -2150,7 +2150,7 @@ impl TableViewer {
             .w(px(4.0))
             .cursor(CursorStyle::PointingHand)
             .on_mouse_down(MouseButton::Left, {
-                move |event: &gpui::MouseDownEvent, _window, cx| {
+                move |event: &gpui_kit::MouseDownEvent, _window, cx| {
                     cx.set_global(ColumnResize {
                         col_index: col_idx,
                         start_x: event.position.x.into(),
@@ -2160,11 +2160,12 @@ impl TableViewer {
             })
             .on_mouse_move({
                 let this = this.clone();
-                move |event: &gpui::MouseMoveEvent, _window, cx| {
+                move |event: &gpui_kit::MouseMoveEvent, _window, cx| {
                     if cx.has_global::<ColumnResize>() {
                         let resize = cx.global::<ColumnResize>();
                         if resize.col_index == col_idx {
-                            let delta: f32 = (event.position.x - gpui::px(resize.start_x)).into();
+                            let delta: f32 =
+                                (event.position.x - gpui_kit::px(resize.start_x)).into();
                             let new_width = resize.start_width + delta;
                             this.update(cx, |v, cx| {
                                 v.update_column_width(col_idx, new_width, cx);
@@ -2184,15 +2185,15 @@ impl TableViewer {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{SharedString, TestAppContext, VisualTestContext, px, size};
+    use gpui_kit::{SharedString, TestAppContext, VisualTestContext, px, size};
 
     use super::{OpenTable, TableViewer};
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn query_errors_are_visible_instead_of_leaving_an_empty_tab(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
 
         let window = cx.open_window(size(px(720.0), px(480.0)), |_, cx| {

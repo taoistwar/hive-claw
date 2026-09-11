@@ -42,3 +42,4 @@ hivegui.db
 encryption.key
 /plugins/[0-9]*/
 .codebuddy/
+PRD.md

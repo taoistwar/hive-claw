@@ -23,7 +23,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use gpui::{AppContext, TestAppContext, VisualTestContext, WindowHandle, px, size};
+use gpui_kit::{AppContext, TestAppContext, VisualTestContext, WindowHandle, px, size};
 use hivegui::ui::{
     key_recovery_view::{
         KeyRecoveryAction, KeyRecoveryCommands, KeyRecoveryFuture, KeyRecoveryReason,
@@ -58,8 +58,8 @@ impl FuturePollHandshake {
 
 fn init_gpui(cx: &mut TestAppContext) {
     cx.update(|cx| {
-        gpui_component::theme::init(cx);
-        gpui_component::init(cx);
+        gpui_kit::component::theme::init(cx);
+        gpui_kit::component::init(cx);
     });
 }
 
@@ -180,10 +180,10 @@ fn open_migration_view(
     cx: &mut TestAppContext,
     state: MigrationRecoveryState,
     commands: Arc<dyn MigrationRecoveryCommands>,
-) -> (WindowHandle<gpui_component::Root>, VisualTestContext) {
+) -> (WindowHandle<gpui_kit::component::Root>, VisualTestContext) {
     let window = cx.open_window(size(px(760.0), px(520.0)), move |window, cx| {
         let view = cx.new(|cx| MigrationRecoveryView::new(state, commands, window, cx));
-        gpui_component::Root::new(view, window, cx).bordered(false)
+        gpui_kit::component::Root::new(view, window, cx).bordered(false)
     });
     cx.run_until_parked();
     let visual = VisualTestContext::from_window(window.into(), cx);
@@ -194,10 +194,10 @@ fn open_key_view(
     cx: &mut TestAppContext,
     reason: KeyRecoveryReason,
     commands: Arc<dyn KeyRecoveryCommands>,
-) -> (WindowHandle<gpui_component::Root>, VisualTestContext) {
+) -> (WindowHandle<gpui_kit::component::Root>, VisualTestContext) {
     let window = cx.open_window(size(px(760.0), px(520.0)), move |window, cx| {
         let view = cx.new(|cx| KeyRecoveryView::new(reason, commands, window, cx));
-        gpui_component::Root::new(view, window, cx).bordered(false)
+        gpui_kit::component::Root::new(view, window, cx).bordered(false)
     });
     cx.run_until_parked();
     let visual = VisualTestContext::from_window(window.into(), cx);
@@ -283,7 +283,7 @@ impl UiHeartbeatProbe {
     }
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn migration_failure_has_only_retry_and_exit_with_trapped_keyboard_focus(cx: &mut TestAppContext) {
     init_gpui(cx);
     let commands = Arc::new(RecordingMigrationCommands::default());
@@ -334,7 +334,7 @@ fn migration_failure_has_only_retry_and_exit_with_trapped_keyboard_focus(cx: &mu
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn integrity_corruption_exposes_restore_confirmed_rebuild_and_exit(cx: &mut TestAppContext) {
     init_gpui(cx);
     let commands = Arc::new(RecordingMigrationCommands::default());
@@ -399,7 +399,7 @@ fn integrity_corruption_exposes_restore_confirmed_rebuild_and_exit(cx: &mut Test
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn every_device_key_failure_is_blocking_and_keyboard_reachable(cx: &mut TestAppContext) {
     init_gpui(cx);
 
@@ -450,7 +450,7 @@ fn every_device_key_failure_is_blocking_and_keyboard_reachable(cx: &mut TestAppC
     }
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn pending_recovery_operation_keeps_status_and_ui_heartbeat_responsive(cx: &mut TestAppContext) {
     init_gpui(cx);
     let release = Arc::new(Notify::new());
@@ -484,7 +484,7 @@ fn pending_recovery_operation_keeps_status_and_ui_heartbeat_responsive(cx: &mut 
     assert_visible(&mut visual, "MIGRATION_RECOVERY_COMPLETED_STATUS");
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn pending_device_key_recovery_keeps_status_and_ui_heartbeat_responsive(cx: &mut TestAppContext) {
     init_gpui(cx);
     let release = Arc::new(Notify::new());
@@ -575,7 +575,7 @@ fn sidebar_is_registered_in_t016e_inventory() {
 
 // §T030.2 — Keyboard activation contract. ──────────────────────────────
 
-#[gpui::test]
+#[gpui_kit::test]
 fn sidebar_tab_order_home_ai_tools_user_config(cx: &mut TestAppContext) {
     init_gpui(cx);
     let (_window, mut visual) = open_sidebar_view(cx);
@@ -601,7 +601,7 @@ fn sidebar_tab_order_home_ai_tools_user_config(cx: &mut TestAppContext) {
     assert_focused(&mut visual, "SIDEBAR_FOCUS-tools");
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn sidebar_enter_activation_navigates_to_focused_route(cx: &mut TestAppContext) {
     init_gpui(cx);
     let (_window, mut visual) = open_sidebar_view(cx);
@@ -628,7 +628,7 @@ fn sidebar_enter_activation_navigates_to_focused_route(cx: &mut TestAppContext) 
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn sidebar_space_activation_matches_enter(cx: &mut TestAppContext) {
     init_gpui(cx);
     let (_window, mut visual) = open_sidebar_view(cx);
@@ -650,7 +650,7 @@ fn sidebar_space_activation_matches_enter(cx: &mut TestAppContext) {
 
 // §T030.3 — AccessKit names. ────────────────────────────────────────────
 
-#[gpui::test]
+#[gpui_kit::test]
 fn sidebar_buttons_expose_accesskit_names(cx: &mut TestAppContext) {
     init_gpui(cx);
     let (_window, mut visual) = open_sidebar_view(cx);
@@ -685,7 +685,7 @@ fn sidebar_buttons_expose_accesskit_names(cx: &mut TestAppContext) {
 
 #[test]
 fn sidebar_focus_targets_expose_real_button_roles_and_names() {
-    use gpui::Role;
+    use gpui_kit::Role;
     use hivegui::ui::sidebar_nav::{SidebarKey, sidebar_focusable_accesskit_probe};
 
     for (key, expected_name) in [
@@ -706,7 +706,7 @@ fn sidebar_focus_targets_expose_real_button_roles_and_names() {
 
 // §T030.4 — Fixed input → visible feedback latency. ─────────────────────
 
-#[gpui::test]
+#[gpui_kit::test]
 fn sidebar_focus_to_visible_feedback_p95_within_t005_baseline(cx: &mut TestAppContext) {
     use std::time::Instant;
 
@@ -737,7 +737,7 @@ fn sidebar_focus_to_visible_feedback_p95_within_t005_baseline(cx: &mut TestAppCo
 
 fn open_sidebar_view(
     cx: &mut TestAppContext,
-) -> (WindowHandle<gpui_component::Root>, VisualTestContext) {
+) -> (WindowHandle<gpui_kit::component::Root>, VisualTestContext) {
     // T032 must expose `hivegui::ui::sidebar_nav::SidebarNav::new_with_focus`
     // (or a `for_test` constructor) that wires the four debug
     // selectors. Until then this call fails to compile.
@@ -753,7 +753,7 @@ fn open_sidebar_view(
             use hivegui::ui::sidebar_nav::SidebarNav;
             SidebarNav::for_test(window, cx)
         });
-        gpui_component::Root::new(view, window, cx).bordered(false)
+        gpui_kit::component::Root::new(view, window, cx).bordered(false)
     });
     cx.run_until_parked();
     let visual = VisualTestContext::from_window(window.into(), cx);
@@ -896,13 +896,13 @@ fn skill_view_search_and_pagination_controls_use_size_20() {
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn skill_view_initial_render_does_not_materialize_the_hidden_form(cx: &mut TestAppContext) {
     let (_workspace, store, store_entity, runtime) = function_visual_store(cx);
     let _runtime_guard = runtime.enter();
     let window = cx.open_window(size(px(720.0), px(520.0)), move |window, cx| {
         let view = cx.new(|cx| hivegui::ui::skill_view::SkillView::new(store_entity, cx));
-        gpui_component::Root::new(view, window, cx).bordered(false)
+        gpui_kit::component::Root::new(view, window, cx).bordered(false)
     });
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
@@ -972,7 +972,7 @@ fn global_config_view_owns_a_focus_handle_and_keyboard_subscription() {
 #[test]
 fn global_config_view_renders_editable_input_widgets() {
     assert!(
-        GLOBAL_CONFIG_SOURCE.contains("gpui_component::input")
+        GLOBAL_CONFIG_SOURCE.contains("gpui_kit::component::input")
             || GLOBAL_CONFIG_SOURCE.contains("Input::new(&"),
         "T045 GlobalConfig view must use the editable Input widget for key/value fields"
     );
@@ -1498,7 +1498,7 @@ fn function_visual_store(
 ) -> (
     support::TestWorkspace,
     hivegui::datasource::Store,
-    gpui::Entity<hivegui::datasource::Store>,
+    gpui_kit::Entity<hivegui::datasource::Store>,
     tokio::runtime::Runtime,
 ) {
     use hivegui::datasource::store::{Store, StoreOpenOptions};
@@ -1523,12 +1523,12 @@ fn function_visual_store(
 
 fn open_function_visual_window(
     cx: &mut TestAppContext,
-    store: gpui::Entity<hivegui::datasource::Store>,
-    window_size: gpui::Size<gpui::Pixels>,
-) -> WindowHandle<gpui_component::Root> {
+    store: gpui_kit::Entity<hivegui::datasource::Store>,
+    window_size: gpui_kit::Size<gpui_kit::Pixels>,
+) -> WindowHandle<gpui_kit::component::Root> {
     cx.open_window(window_size, move |window, cx| {
         let view = cx.new(|cx| hivegui::ui::function_view::FunctionView::new(store, cx));
-        gpui_component::Root::new(view, window, cx).bordered(false)
+        gpui_kit::component::Root::new(view, window, cx).bordered(false)
     })
 }
 
@@ -1536,7 +1536,7 @@ fn click_function_selector(visual: &mut VisualTestContext, selector: &'static st
     let Some(bounds) = visual.debug_bounds(selector) else {
         return false;
     };
-    visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+    visual.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
     true
 }
@@ -1549,7 +1549,7 @@ fn replace_function_input(
     let Some(bounds) = visual.debug_bounds(selector) else {
         return false;
     };
-    visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+    visual.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
     visual.simulate_keystrokes("ctrl-a");
     visual.simulate_input(value);
     visual.run_until_parked();
@@ -1584,11 +1584,11 @@ fn settle_function_selector_absent(visual: &mut VisualTestContext, selector: &'s
 }
 
 fn assert_function_semantic_node(
-    node: &gpui::accesskit::Node,
-    expected_role: gpui::Role,
+    node: &gpui_kit::accesskit::Node,
+    expected_role: gpui_kit::Role,
     expected_label: &str,
 ) {
-    use gpui::accesskit::Action;
+    use gpui_kit::accesskit::Action;
 
     assert_eq!(node.role(), expected_role);
     assert_eq!(node.label(), Some(expected_label));
@@ -1600,9 +1600,9 @@ fn assert_function_semantic_node(
     }
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn function_form_native_wheel_moves_bottom_actions_into_viewport(cx: &mut TestAppContext) {
-    use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+    use gpui_kit::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
 
     let (_workspace, _store, store_entity, runtime) = function_visual_store(cx);
     let _runtime_guard = runtime.enter();
@@ -1717,9 +1717,9 @@ fn function_form_native_wheel_moves_bottom_actions_into_viewport(cx: &mut TestAp
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn function_builtin_and_placeholder_surfaces_enforce_kind_semantics(cx: &mut TestAppContext) {
-    use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+    use gpui_kit::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
     use hivegui::datasource::{FunctionInput, FunctionKind, FunctionStore};
     use hivegui::ui::function_view::{FunctionSemanticStatus, function_semantic_accesskit_probe};
 
@@ -1893,7 +1893,7 @@ fn function_builtin_and_placeholder_surfaces_enforce_kind_semantics(cx: &mut Tes
     assert!(!delete_visible, "Builtin Function must not expose Delete");
     assert_function_semantic_node(
         &readonly_accesskit,
-        gpui::Role::Status,
+        gpui_kit::Role::Status,
         "format_template builtin_immutable",
     );
     assert!(
@@ -1929,7 +1929,7 @@ fn function_builtin_and_placeholder_surfaces_enforce_kind_semantics(cx: &mut Tes
     );
     assert_function_semantic_node(
         &placeholder_accesskit,
-        gpui::Role::Status,
+        gpui_kit::Role::Status,
         "t085_schema_placeholder function_not_executable",
     );
     assert!(
@@ -1961,7 +1961,7 @@ fn function_builtin_and_placeholder_surfaces_enforce_kind_semantics(cx: &mut Tes
     assert_eq!(persisted_placeholder.required_capabilities(), None);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn function_test_dialog_renders_local_success_and_error_terminal_feedback(cx: &mut TestAppContext) {
     use hivegui::ui::function_view::{FunctionSemanticStatus, function_semantic_accesskit_probe};
 
@@ -2023,7 +2023,7 @@ fn function_test_dialog_renders_local_success_and_error_terminal_feedback(cx: &m
         success_visible,
         "successful local Builtin execution must render a terminal success state"
     );
-    assert_function_semantic_node(&success_accesskit, gpui::Role::Status, "status=success");
+    assert_function_semantic_node(&success_accesskit, gpui_kit::Role::Status, "status=success");
     assert!(
         error_input_set && error_run,
         "local json_parse error must be driven through the same rendered controls"
@@ -2032,14 +2032,14 @@ fn function_test_dialog_renders_local_success_and_error_terminal_feedback(cx: &m
         error_visible,
         "failed local Builtin execution must render a terminal error state"
     );
-    assert_function_semantic_node(&error_accesskit, gpui::Role::Alert, "status=error");
+    assert_function_semantic_node(&error_accesskit, gpui_kit::Role::Alert, "status=error");
     assert!(
         no_remote_backend,
         "Builtin Function test feedback must remain entirely local"
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn function_keyboard_conflict_preserves_safe_value_focus_and_modal_lifecycle(
     cx: &mut TestAppContext,
 ) {
@@ -2220,7 +2220,7 @@ fn function_keyboard_conflict_preserves_safe_value_focus_and_modal_lifecycle(
         .expect("identifier conflict must publish an accessible error name");
     assert_function_semantic_node(
         &conflict_accesskit,
-        gpui::Role::Alert,
+        gpui_kit::Role::Alert,
         "t085_safe_duplicate field=identifier reason=duplicate",
     );
     for forbidden in ["UNIQUE constraint", "sqlite", "database"] {
@@ -2337,7 +2337,7 @@ fn workflow_visual_store(
 ) -> (
     tempfile::TempDir,
     hivegui::datasource::Store,
-    gpui::Entity<hivegui::datasource::Store>,
+    gpui_kit::Entity<hivegui::datasource::Store>,
     tokio::runtime::Runtime,
 ) {
     init_gpui(cx);
@@ -2353,12 +2353,12 @@ fn workflow_visual_store(
 
 fn open_workflow_visual_window(
     cx: &mut TestAppContext,
-    store: gpui::Entity<hivegui::datasource::Store>,
-    window_size: gpui::Size<gpui::Pixels>,
-) -> WindowHandle<gpui_component::Root> {
+    store: gpui_kit::Entity<hivegui::datasource::Store>,
+    window_size: gpui_kit::Size<gpui_kit::Pixels>,
+) -> WindowHandle<gpui_kit::component::Root> {
     cx.open_window(window_size, move |window, cx| {
         let view = cx.new(|cx| hivegui::ui::workflow_view::WorkflowView::new(store, cx));
-        gpui_component::Root::new(view, window, cx).bordered(false)
+        gpui_kit::component::Root::new(view, window, cx).bordered(false)
     })
 }
 
@@ -2366,7 +2366,7 @@ fn click_visual_selector(visual: &mut VisualTestContext, selector: &'static str)
     let bounds = visual
         .debug_bounds(selector)
         .unwrap_or_else(|| panic!("missing rendered Workflow selector `{selector}`"));
-    visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+    visual.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
 }
 
@@ -2378,7 +2378,7 @@ fn replace_workflow_input(
     let Some(bounds) = visual.debug_bounds(selector) else {
         return false;
     };
-    visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+    visual.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
     visual.simulate_keystrokes("ctrl-a");
     visual.simulate_input(value);
     visual.run_until_parked();
@@ -2450,7 +2450,7 @@ fn tool_visual_store(
 ) -> (
     support::TestWorkspace,
     hivegui::datasource::Store,
-    gpui::Entity<hivegui::datasource::Store>,
+    gpui_kit::Entity<hivegui::datasource::Store>,
     tokio::runtime::Runtime,
 ) {
     use hivegui::datasource::store::{Store, StoreOpenOptions};
@@ -2471,12 +2471,12 @@ fn tool_visual_store(
 
 fn open_tool_visual_window(
     cx: &mut TestAppContext,
-    store: gpui::Entity<hivegui::datasource::Store>,
-    window_size: gpui::Size<gpui::Pixels>,
-) -> WindowHandle<gpui_component::Root> {
+    store: gpui_kit::Entity<hivegui::datasource::Store>,
+    window_size: gpui_kit::Size<gpui_kit::Pixels>,
+) -> WindowHandle<gpui_kit::component::Root> {
     cx.open_window(window_size, move |window, cx| {
         let view = cx.new(|cx| hivegui::ui::tool_view::ToolView::new(store, cx));
-        gpui_component::Root::new(view, window, cx).bordered(false)
+        gpui_kit::component::Root::new(view, window, cx).bordered(false)
     })
 }
 
@@ -2491,9 +2491,9 @@ fn close_tool_visual_window(
     drop(store);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn tool_form_native_wheel_moves_bottom_actions_into_viewport(cx: &mut TestAppContext) {
-    use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+    use gpui_kit::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
 
     let (_workspace, store, store_entity, runtime) = tool_visual_store(cx);
     let _runtime_guard = runtime.enter();
@@ -2503,7 +2503,7 @@ fn tool_form_native_wheel_moves_bottom_actions_into_viewport(cx: &mut TestAppCon
 
     let add = visual.debug_bounds("TOOL_ADD");
     if let Some(add) = add {
-        visual.simulate_click(add.center(), gpui::Modifiers::default());
+        visual.simulate_click(add.center(), gpui_kit::Modifiers::default());
         visual.run_until_parked();
     }
     let modal = visual.debug_bounds("TOOL_MODAL");
@@ -2576,7 +2576,7 @@ fn click_tool_add(visual: &mut VisualTestContext) -> bool {
     else {
         return false;
     };
-    visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+    visual.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
     true
 }
@@ -2592,7 +2592,7 @@ fn settle_tool_selector(visual: &mut VisualTestContext, selector: &'static str) 
     false
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn tool_form_renders_every_fr020_field_with_semantic_controls(cx: &mut TestAppContext) {
     let (_workspace, store, store_entity, runtime) = tool_visual_store(cx);
     let _runtime_guard = runtime.enter();
@@ -2638,7 +2638,7 @@ fn tool_form_renders_every_fr020_field_with_semantic_controls(cx: &mut TestAppCo
     }
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn tool_duplicate_identifier_keeps_form_focus_and_safe_value(cx: &mut TestAppContext) {
     const IDENTIFIER: &str = "t101_safe_duplicate";
 
@@ -2681,8 +2681,9 @@ fn tool_duplicate_identifier_keeps_form_focus_and_safe_value(cx: &mut TestAppCon
         let bounds = visual
             .debug_bounds("TOOL_IDENTIFIER_INPUT")
             .expect("settled identifier input");
-        visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+        visual.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
         visual.simulate_input(IDENTIFIER);
+        visual.run_until_parked();
         visual.simulate_keystrokes("shift-tab");
         visual.run_until_parked();
         if visual.debug_bounds("TOOL_FORM_SAVE_FOCUSED").is_some() {
@@ -2719,7 +2720,7 @@ fn tool_duplicate_identifier_keeps_form_focus_and_safe_value(cx: &mut TestAppCon
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn workflow_form_renders_every_fr019_field_with_stable_selectors(cx: &mut TestAppContext) {
     let (_temp_dir, store, store_entity, runtime) = workflow_visual_store(cx);
     let _runtime_guard = runtime.enter();
@@ -2754,9 +2755,9 @@ fn workflow_form_renders_every_fr019_field_with_stable_selectors(cx: &mut TestAp
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn workflow_form_native_wheel_moves_bottom_actions_into_viewport(cx: &mut TestAppContext) {
-    use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+    use gpui_kit::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
 
     let (_temp_dir, store, store_entity, runtime) = workflow_visual_store(cx);
     let _runtime_guard = runtime.enter();
@@ -2808,7 +2809,7 @@ fn workflow_form_native_wheel_moves_bottom_actions_into_viewport(cx: &mut TestAp
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn workflow_delete_conflict_keeps_the_tool_reference_and_confirmation_surface(
     cx: &mut TestAppContext,
 ) {
@@ -2894,10 +2895,10 @@ fn workflow_delete_conflict_keeps_the_tool_reference_and_confirmation_surface(
     let conflict_selector: &'static str =
         Box::leak(format!("WORKFLOW_DELETE_CONFLICT-{}", workflow.id).into_boxed_str());
     if let Some(delete_bounds) = delete_bounds {
-        visual.simulate_click(delete_bounds.center(), gpui::Modifiers::default());
+        visual.simulate_click(delete_bounds.center(), gpui_kit::Modifiers::default());
         visual.run_until_parked();
         if let Some(confirm_bounds) = visual.debug_bounds("confirm-delete") {
-            visual.simulate_click(confirm_bounds.center(), gpui::Modifiers::default());
+            visual.simulate_click(confirm_bounds.center(), gpui_kit::Modifiers::default());
             let _ = settle_workflow_selector(&mut visual, conflict_selector);
         }
     }
@@ -2949,7 +2950,7 @@ fn workflow_delete_conflict_keeps_the_tool_reference_and_confirmation_surface(
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn workflow_duplicate_identifier_preserves_form_safe_values_and_error_focus(
     cx: &mut TestAppContext,
 ) {
@@ -3088,13 +3089,13 @@ fn seed_dag_keyboard_workflow(
 
 fn open_dag_visual_window(
     cx: &mut TestAppContext,
-    store: gpui::Entity<hivegui::datasource::Store>,
+    store: gpui_kit::Entity<hivegui::datasource::Store>,
     workflow_id: i64,
-) -> WindowHandle<gpui_component::Root> {
+) -> WindowHandle<gpui_kit::component::Root> {
     cx.open_window(size(px(900.0), px(600.0)), move |window, cx| {
         let editor =
             cx.new(|cx| hivegui::ui::dag_editor_view::DagEditorView::new(store, workflow_id, cx));
-        gpui_component::Root::new(editor, window, cx).bordered(false)
+        gpui_kit::component::Root::new(editor, window, cx).bordered(false)
     })
 }
 
@@ -3112,7 +3113,7 @@ fn close_dag_visual_window(
     drop(store);
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn dag_keyboard_arrow_moves_the_real_selected_node(cx: &mut TestAppContext) {
     let (_temp_dir, store, store_entity, runtime) = workflow_visual_store(cx);
     let workflow_id = seed_dag_keyboard_workflow(&runtime, &store);
@@ -3127,7 +3128,7 @@ fn dag_keyboard_arrow_moves_the_real_selected_node(cx: &mut TestAppContext) {
     let before = visual
         .debug_bounds("DAG_NODE-middle")
         .expect("middle before move");
-    visual.simulate_click(before.center(), gpui::Modifiers::default());
+    visual.simulate_click(before.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
     let selected = visual.debug_bounds("DAG_SELECTED-middle").is_some();
     let canvas_focused = visual.debug_bounds("DAG_CANVAS_FOCUSED").is_some();
@@ -3152,7 +3153,7 @@ fn dag_keyboard_arrow_moves_the_real_selected_node(cx: &mut TestAppContext) {
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn dag_keyboard_enter_connects_nodes_and_escape_cancels_edge_mode(cx: &mut TestAppContext) {
     let (_temp_dir, store, store_entity, runtime) = workflow_visual_store(cx);
     let workflow_id = seed_dag_keyboard_workflow(&runtime, &store);
@@ -3162,7 +3163,7 @@ fn dag_keyboard_enter_connects_nodes_and_escape_cancels_edge_mode(cx: &mut TestA
     let mut visual = VisualTestContext::from_window(window.into(), cx);
     assert!(settle_workflow_selector(&mut visual, "DAG_NODE-start"));
     let start = visual.debug_bounds("DAG_NODE-start").expect("start node");
-    visual.simulate_click(start.center(), gpui::Modifiers::default());
+    visual.simulate_click(start.center(), gpui_kit::Modifiers::default());
     visual.simulate_keystrokes("enter");
     visual.run_until_parked();
     let edge_mode_started = visual.debug_bounds("DAG_EDGE_MODE-start").is_some();
@@ -3171,7 +3172,7 @@ fn dag_keyboard_enter_connects_nodes_and_escape_cancels_edge_mode(cx: &mut TestA
     visual.run_until_parked();
     let edge_created = visual.debug_bounds("DAG_EDGE-start-middle").is_some();
 
-    visual.simulate_click(start.center(), gpui::Modifiers::default());
+    visual.simulate_click(start.center(), gpui_kit::Modifiers::default());
     visual.simulate_keystrokes("enter");
     visual.run_until_parked();
     let second_edge_mode = visual.debug_bounds("DAG_EDGE_MODE-start").is_some();
@@ -3198,7 +3199,7 @@ fn dag_keyboard_enter_connects_nodes_and_escape_cancels_edge_mode(cx: &mut TestA
     );
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn dag_keyboard_delete_property_panel_and_focus_restore_are_real(cx: &mut TestAppContext) {
     let (_temp_dir, store, store_entity, runtime) = workflow_visual_store(cx);
     let workflow_id = seed_dag_keyboard_workflow(&runtime, &store);
@@ -3211,14 +3212,14 @@ fn dag_keyboard_delete_property_panel_and_focus_restore_are_real(cx: &mut TestAp
     let start = visual.debug_bounds("DAG_NODE-start").expect("start node");
     visual.simulate_mouse_down(
         start.center(),
-        gpui::MouseButton::Right,
-        gpui::Modifiers::default(),
+        gpui_kit::MouseButton::Right,
+        gpui_kit::Modifiers::default(),
     );
     visual.run_until_parked();
     let config_action = visual
         .debug_bounds("DAG_NODE_MENU_CONFIG")
         .expect("node property action");
-    visual.simulate_click(config_action.center(), gpui::Modifiers::default());
+    visual.simulate_click(config_action.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
     let property_panel_visible = visual.debug_bounds("DAG_NODE_CONFIG_EDITOR").is_some();
     visual.simulate_keystrokes("escape");
@@ -3227,7 +3228,7 @@ fn dag_keyboard_delete_property_panel_and_focus_restore_are_real(cx: &mut TestAp
     let canvas_focus_restored = visual.debug_bounds("DAG_CANVAS_FOCUSED").is_some();
 
     let middle_deleted = if let Some(middle) = visual.debug_bounds("DAG_NODE-middle") {
-        visual.simulate_click(middle.center(), gpui::Modifiers::default());
+        visual.simulate_click(middle.center(), gpui_kit::Modifiers::default());
         visual.simulate_keystrokes("delete");
         visual.run_until_parked();
         visual.debug_bounds("DAG_NODE-middle").is_none()
@@ -3390,7 +3391,7 @@ fn us13_visual_store(
 ) -> (
     support::TestWorkspace,
     hivegui::datasource::Store,
-    gpui::Entity<hivegui::datasource::Store>,
+    gpui_kit::Entity<hivegui::datasource::Store>,
     tokio::runtime::Runtime,
 ) {
     use hivegui::datasource::store::{Store, StoreOpenOptions};
@@ -3417,7 +3418,7 @@ fn click_us13_selector(visual: &mut VisualTestContext, selector: &'static str) -
     let Some(bounds) = visual.debug_bounds(selector) else {
         return false;
     };
-    visual.simulate_click(bounds.center(), gpui::Modifiers::default());
+    visual.simulate_click(bounds.center(), gpui_kit::Modifiers::default());
     visual.run_until_parked();
     true
 }
@@ -3551,9 +3552,9 @@ fn wait_for_t121_generation_pair(
     }
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn agent_duplicate_keeps_form_focus_and_native_scroll_reaches_actions(cx: &mut TestAppContext) {
-    use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+    use gpui_kit::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
     use hivegui::datasource::entity_store::{AgentInput, AgentStore};
 
     let (_workspace, store, store_entity, runtime) = us13_visual_store(cx);
@@ -3571,7 +3572,7 @@ fn agent_duplicate_keeps_form_focus_and_native_scroll_reaches_actions(cx: &mut T
     let _runtime_guard = runtime.enter();
     let window = cx.open_window(size(px(520.0), px(300.0)), move |window, cx| {
         let view = cx.new(|cx| hivegui::ui::agent_view::AgentView::new(store_entity, cx));
-        gpui_component::Root::new(view, window, cx).bordered(false)
+        gpui_kit::component::Root::new(view, window, cx).bordered(false)
     });
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
@@ -3585,7 +3586,7 @@ fn agent_duplicate_keeps_form_focus_and_native_scroll_reaches_actions(cx: &mut T
         visual.simulate_event(ScrollWheelEvent {
             position: scroll_bounds.center(),
             delta: ScrollDelta::Pixels(point(px(0.0), px(-2_000.0))),
-            modifiers: gpui::Modifiers::default(),
+            modifiers: gpui_kit::Modifiers::default(),
             touch_phase: TouchPhase::Moved,
         });
         visual.run_until_parked();
@@ -3638,7 +3639,7 @@ fn agent_duplicate_keeps_form_focus_and_native_scroll_reaches_actions(cx: &mut T
     assert!(!AGENT_VIEW_SOURCE.contains("on_scroll_wheel"));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn conversation_stop_history_delete_and_keyboard_flow_are_real(cx: &mut TestAppContext) {
     use hivegui::agent::local_agent::LocalAgentRuntime;
     use hivegui::datasource::entity_store::{AgentInput, AgentStore};
@@ -3668,7 +3669,7 @@ fn conversation_stop_history_delete_and_keyboard_flow_are_real(cx: &mut TestAppC
                 collector,
             )
         });
-        gpui_component::Root::new(view, window, cx).bordered(false)
+        gpui_kit::component::Root::new(view, window, cx).bordered(false)
     });
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
@@ -3721,11 +3722,11 @@ fn conversation_stop_history_delete_and_keyboard_flow_are_real(cx: &mut TestAppC
     assert!(!CONVERSATION_VIEW_SOURCE.contains("on_scroll_wheel"));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn settings_backup_restore_retention_and_diagnostics_are_keyboard_reachable(
     cx: &mut TestAppContext,
 ) {
-    use gpui::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+    use gpui_kit::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
     use hivegui::runtime::diagnostics::ExecutionEventCollector;
 
     let (_workspace, store, _store_entity, runtime) = us13_visual_store(cx);
@@ -3737,7 +3738,7 @@ fn settings_backup_restore_retention_and_diagnostics_are_keyboard_reachable(
             view.set_store(store);
             view
         });
-        gpui_component::Root::new(view, window, cx).bordered(false)
+        gpui_kit::component::Root::new(view, window, cx).bordered(false)
     });
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
@@ -3747,7 +3748,7 @@ fn settings_backup_restore_retention_and_diagnostics_are_keyboard_reachable(
         visual.simulate_event(ScrollWheelEvent {
             position: bounds.center(),
             delta: ScrollDelta::Pixels(point(px(0.0), px(-1_200.0))),
-            modifiers: gpui::Modifiers::default(),
+            modifiers: gpui_kit::Modifiers::default(),
             touch_phase: TouchPhase::Moved,
         });
         visual.run_until_parked();
@@ -3784,7 +3785,7 @@ fn settings_backup_restore_retention_and_diagnostics_are_keyboard_reachable(
     assert!(!SETTINGS_VIEW_SOURCE.contains("on_scroll_wheel"));
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 fn agent_workflow_backup_combined_load_keeps_keyboard_focus_and_stop_responsive(
     cx: &mut TestAppContext,
 ) {
@@ -3968,7 +3969,7 @@ fn agent_workflow_backup_combined_load_keeps_keyboard_focus_and_stop_responsive(
                 collector,
             )
         });
-        gpui_component::Root::new(view, window, cx).bordered(false)
+        gpui_kit::component::Root::new(view, window, cx).bordered(false)
     });
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);

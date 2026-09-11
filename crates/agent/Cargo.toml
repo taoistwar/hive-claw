@@ -22,6 +22,7 @@ uuid = { workspace = true }
 dirs = { workspace = true }
 once_cell = "1"
 sha2 = { workspace = true }
+hex = "0.4"
 walkdir = { workspace = true }
 globset = { workspace = true }
 reqwest = { workspace = true }

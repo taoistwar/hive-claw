@@ -13,12 +13,12 @@ use crate::ui::management_style::{
     list_container, list_header, list_header_cell, list_row, management_modal_layer,
     management_modal_panel, management_modal_scroll,
 };
-use gpui::prelude::FluentBuilder;
-use gpui::*;
-use gpui_component::ActiveTheme as _;
-use gpui_component::input::{Input, InputState, NumberInput, Textarea, TextareaState};
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::select::{SearchableVec, Select, SelectState};
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::input::{Input, InputState, NumberInput, Textarea, TextareaState};
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::select::{SearchableVec, Select, SelectState};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::*;
 
 const PAGE_SIZE: i64 = 20;
 const CONFIG_TYPES: &[&str] = &["text", "number", "json", "boolean"];
@@ -53,7 +53,7 @@ struct TypeSelectItem {
     label: String,
 }
 
-impl gpui_component::searchable_list::SearchableListItem for TypeSelectItem {
+impl gpui_kit::component::searchable_list::SearchableListItem for TypeSelectItem {
     type Value = usize;
 
     fn title(&self) -> SharedString {
@@ -394,7 +394,7 @@ impl GlobalConfigView {
                 })
                 .collect::<Vec<_>>(),
         );
-        let initial_index = Some(gpui_component::IndexPath::default().row(self.form_type_idx));
+        let initial_index = Some(gpui_kit::component::IndexPath::default().row(self.form_type_idx));
         let select_state =
             cx.new(|cx| SelectState::new(items, initial_index, window, cx).searchable(false));
 
@@ -409,11 +409,11 @@ impl GlobalConfigView {
     fn on_type_select(
         &mut self,
         _: &Entity<SelectState<SearchableVec<TypeSelectItem>>>,
-        event: &gpui_component::select::SelectEvent<SearchableVec<TypeSelectItem>>,
+        event: &gpui_kit::component::select::SelectEvent<SearchableVec<TypeSelectItem>>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if let gpui_component::select::SelectEvent::Confirm(Some(idx)) = event {
+        if let gpui_kit::component::select::SelectEvent::Confirm(Some(idx)) = event {
             let source_type = CONFIG_TYPES[self.form_type_idx];
             let target_type = CONFIG_TYPES[*idx];
             self.form_data =
@@ -1416,14 +1416,16 @@ mod tests {
     /// the modal panel. Mounting the panel behind a zero-height
     /// wrapper collapsed the panel to its padding (50px) and clipped
     /// every field, so the dialog rendered as an empty box.
-    #[gpui::test]
-    fn global_config_edit_form_body_is_laid_out_inside_the_modal(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn global_config_edit_form_body_is_laid_out_inside_the_modal(
+        cx: &mut gpui_kit::TestAppContext,
+    ) {
         use crate::datasource::GlobalConfig;
-        use gpui::{VisualTestContext, px, size};
+        use gpui_kit::{VisualTestContext, px, size};
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let window = cx.open_window(size(px(1000.0), px(600.0)), |_, cx| {
             let mut view = super::GlobalConfigView::new(cx);
@@ -1486,16 +1488,16 @@ mod tests {
     /// every rejected save so the operator can grep `hivegui.log`
     /// (target `hivegui::ui::global_config`) instead of only seeing a
     /// generic "保存失败" in the dialog.
-    #[gpui::test]
-    fn save_config_emits_tracing_event_for_validation_failure(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn save_config_emits_tracing_event_for_validation_failure(cx: &mut gpui_kit::TestAppContext) {
         use crate::datasource::GlobalConfig;
-        use gpui::size;
+        use gpui_kit::size;
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
-        let window = cx.open_window(size(gpui::px(1000.0), gpui::px(600.0)), |_, cx| {
+        let window = cx.open_window(size(gpui_kit::px(1000.0), gpui_kit::px(600.0)), |_, cx| {
             let mut view = super::GlobalConfigView::new(cx);
             view.loaded = true;
             view.total = 0;
@@ -1545,14 +1547,14 @@ mod tests {
         );
     }
 
-    #[gpui::test]
-    fn global_config_list_matches_reference_geometry(cx: &mut gpui::TestAppContext) {
+    #[gpui_kit::test]
+    fn global_config_list_matches_reference_geometry(cx: &mut gpui_kit::TestAppContext) {
         use crate::datasource::GlobalConfig;
-        use gpui::{VisualTestContext, px, size};
+        use gpui_kit::{VisualTestContext, px, size};
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let window = cx.open_window(size(px(1000.0), px(600.0)), |_, cx| {
             let mut view = super::GlobalConfigView::new(cx);

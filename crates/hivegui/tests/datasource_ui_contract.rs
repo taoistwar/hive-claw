@@ -24,7 +24,7 @@ use std::{
     time::Duration,
 };
 
-use gpui::{AppContext as _, TestAppContext, VisualTestContext, px, size};
+use gpui_kit::{AppContext as _, TestAppContext, VisualTestContext, px, size};
 use hivegui::datasource::data_source_store::{
     DataSourceFilter, DataSourcePage, DataSourceRecord, DataSourceStore, DataSourceViewMode,
 };
@@ -57,7 +57,7 @@ fn datasource_form_renders_editable_input_widgets() {
     let source = include_str!("../src/ui/datasource_form.rs");
 
     assert!(
-        source.contains("gpui_component::input::{Input, InputState}"),
+        source.contains("gpui_kit::component::input::{Input, InputState}"),
         "datasource form must import the editable Input widget"
     );
     assert!(
@@ -178,7 +178,7 @@ fn datasource_view_pages_results_in_groups_of_twenty() {
     }
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn datasource_list_renders_within_responsive_heartbeat_during_background_probe(
     cx: &mut TestAppContext,
 ) {
@@ -188,15 +188,15 @@ async fn datasource_list_renders_within_responsive_heartbeat_during_background_p
     // test runtime) and checks that tab focus still moves on a 100ms
     // cadence while the probe is pending.
     cx.update(|cx| {
-        gpui_component::theme::init(cx);
-        gpui_component::init(cx);
+        gpui_kit::component::theme::init(cx);
+        gpui_kit::component::init(cx);
     });
     let window = cx.open_window(size(px(1200.0), px(800.0)), |window, cx| {
         let view = cx.new(|cx| {
             use hivegui::ui::datasource_view::DatasourceView;
             DatasourceView::for_test(window, cx)
         });
-        gpui_component::Root::new(view, window, cx).bordered(false)
+        gpui_kit::component::Root::new(view, window, cx).bordered(false)
     });
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);

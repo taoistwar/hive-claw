@@ -18,7 +18,7 @@
 //!
 //! The pool used by sqlx needs a tokio runtime, so the assertions
 //! below use `#[tokio::test(flavor = "current_thread")]` rather
-//! than `#[gpui::test]`. The `GlobalConfigStore` public boundary
+//! than `#[gpui_kit::test]`. The `GlobalConfigStore` public boundary
 //! itself is sync (it owns an internal current-thread tokio
 //! runtime for schema migration + ad-hoc reads) so callers do not
 //! need to be async to drive it.

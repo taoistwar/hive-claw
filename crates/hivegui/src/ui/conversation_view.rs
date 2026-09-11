@@ -8,11 +8,11 @@ use crate::datasource::Store;
 use crate::runtime::diagnostics::{DiagnosticBundle, ExecutionEventCollector, RedactionConfig};
 use crate::runtime::provider_resolver::LocalProviderDecisionModel;
 use crate::runtime::tool_adapter::{LocalPersistedToolTargetRunner, PersistedToolExecutor};
-use gpui::prelude::FluentBuilder;
-use gpui::*;
-use gpui_component::ActiveTheme as _;
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::scroll::ScrollableElement;
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::*;
 use hive_runtime_core::execution::{EventSink, RuntimeEvent, RuntimeEventKind};
 use std::path::Path;
 use std::sync::{
@@ -20,7 +20,7 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 
-actions!(
+gpui_kit::actions!(
     hivegui_conversation,
     [ConversationTab, ConversationActivate]
 );
@@ -1297,17 +1297,17 @@ fn focus_marker(selector: impl Into<SharedString>) -> Stateful<Div> {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{TestAppContext, VisualTestContext, px, size};
+    use gpui_kit::{TestAppContext, VisualTestContext, px, size};
 
     use crate::runtime::diagnostics::ExecutionEventCollector;
 
     use super::ConversationView;
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn conversation_view_has_visible_layout_and_scrolling_area(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let window = cx.open_window(size(px(1100.0), px(720.0)), |_, cx| {
             ConversationView::new(

@@ -22,12 +22,12 @@
 
 use std::{path::PathBuf, sync::Arc};
 
-use gpui::{
+use gpui_kit::{
     AnyElement, Context, Entity, FocusHandle, IntoElement, KeyBinding, KeyDownEvent, Render,
-    Styled, Window, actions, div, prelude::*, px,
+    Styled, Window, div, prelude::*, px,
 };
 
-actions!(hivegui_recovery, [RecoveryTab, RecoveryTabPrev]);
+gpui_kit::actions!(hivegui_recovery, [RecoveryTab, RecoveryTabPrev]);
 
 /// A user action triggered from the recovery view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -216,7 +216,7 @@ impl MigrationRecoveryView {
         let main_button_focus = (0..3).map(|_| cx.focus_handle()).collect::<Vec<_>>();
         let confirm_button_focus = (0..2).map(|_| cx.focus_handle()).collect::<Vec<_>>();
         // Register bindings for Tab / Shift-Tab with NO key context.
-        // The default `gpui_component::Root` bindings use `Some("Root")`
+        // The default `gpui_kit::component::Root` bindings use `Some("Root")`
         // context; by registering with no context AND later, the
         // keymap reverse-search will match our bindings first (later
         // index wins on ties), so when a recovery view is open we can
@@ -732,7 +732,7 @@ impl Render for MigrationRecoveryView {
             .flex_col()
             .p_4()
             .gap_2()
-            // Capture phase runs BEFORE the `gpui_component::Root` action
+            // Capture phase runs BEFORE the `gpui_kit::component::Root` action
             // dispatch (which converts Tab into `Root::Tab` / `TabPrev`
             // Tab / Shift-Tab are routed through the custom
             // `RecoveryTab` / `RecoveryTabPrev` actions, which are
@@ -787,7 +787,7 @@ impl Render for MigrationRecoveryView {
 /// Focus global used by the recovery view to trap keyboard focus.
 #[derive(Default)]
 pub struct MigrationRecoveryFocus(pub Option<Entity<()>>);
-impl gpui::Global for MigrationRecoveryFocus {}
+impl gpui_kit::Global for MigrationRecoveryFocus {}
 
 const STRINGS: StringsZh = StringsZh {
     zh_migration_recovery_title: "恢复模式",

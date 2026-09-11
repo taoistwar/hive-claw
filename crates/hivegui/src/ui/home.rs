@@ -1,5 +1,5 @@
-use gpui::{Context, Window, div, prelude::*, px};
-use gpui_component::ActiveTheme as _;
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::{Context, Window, div, prelude::*, px};
 
 use crate::ui::strings_zh;
 

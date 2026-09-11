@@ -10,11 +10,11 @@ use crate::ui::management_style::{
     list_container, list_header, list_header_cell, list_row, management_modal_layer,
     management_modal_panel, management_modal_scroll,
 };
-use gpui::prelude::FluentBuilder;
-use gpui::*;
-use gpui_component::ActiveTheme as _;
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::scroll::ScrollableElement;
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::*;
 
 /// Stable modal selector for the skill form overlay.
 pub const SKILL_MODAL: &str = "skill-modal";
@@ -925,7 +925,7 @@ impl Render for SkillView {
 fn form_field(
     label: &'static str,
     input: Entity<InputState>,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
 ) -> impl IntoElement {
     div()
         .flex()

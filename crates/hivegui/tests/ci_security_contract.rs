@@ -5,7 +5,7 @@ const GITLEAKS_LINUX_X64_SHA256: &str =
     "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb";
 const CARGO_DENY_VERSION: &str = "0.20.2";
 const SQLX_CLI_VERSION: &str = "0.9.0";
-const MYSQL_ASYNC_VERSION: &str = "=0.37.0";
+const MYSQL_ASYNC_VERSION: &str = "=0.37.1";
 const SQLX_VERSION: &str = "=0.9.0";
 const AWS_SDK_S3_VERSION: &str = "=1.141.0";
 const VENDORED_WAYLAND_SCANNER_VERSION: &str = "0.31.10";

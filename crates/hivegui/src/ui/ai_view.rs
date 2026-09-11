@@ -1,9 +1,9 @@
 //! AI 管理视图 - 统一承载 AI、扩展和系统配置管理。
 use std::sync::Arc;
 
-use gpui::*;
-use gpui_component::ActiveTheme as _;
-use gpui_component::tab::{Tab, TabBar};
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::*;
 
 use crate::agent::local_agent::LocalAgentRuntime;
 use crate::datasource::Store;

@@ -122,7 +122,7 @@ async fn t166_real_plugin_memory_limit_maps_5000_audits_and_discards_instance() 
 
     let identifier = format!("t166-{}", uuid::Uuid::new_v4().simple());
     let s3_key = format!("plugins/{identifier}/1.0.0.wasm");
-    let sha256 = format!("{:x}", Sha256::digest(&wasm));
+    let sha256 = hex::encode(Sha256::digest(&wasm));
     let wasm_size = i64::try_from(wasm.len())?;
 
     hiveweb::storage::s3::put_wasm(&s3, &s3_key, wasm.clone()).await?;

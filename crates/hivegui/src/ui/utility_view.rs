@@ -4,9 +4,9 @@ use crate::datasource::Store;
 use crate::datasource::llm_store::LlmStore;
 use crate::ui::datasource_view::DataSourceView;
 use crate::ui::prompt_debugger::PromptDebugger;
-use gpui::*;
-use gpui_component::ActiveTheme as _;
-use gpui_component::tab::{Tab, TabBar};
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::*;
 
 /// `UtilityView` 内嵌标签页索引。
 const TAB_PROMPT_DEBUGGER: usize = 0;

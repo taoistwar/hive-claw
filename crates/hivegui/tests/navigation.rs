@@ -92,8 +92,8 @@ fn navigation_enumerates_exactly_three_routes() {
 // §T029.3 — Public boundary: no remote_backend prerequisite.
 // ---------------------------------------------------------------------------
 
-#[gpui::test]
-async fn navigation_does_not_contact_remote_backend(cx: &mut gpui::TestAppContext) {
+#[gpui_kit::test]
+async fn navigation_does_not_contact_remote_backend(cx: &mut gpui_kit::TestAppContext) {
     // T032 must install a no-op network sink by default. The
     // production-side marker `assert_no_remote_backend_prerequisite` is the
     // real defence: a future change that reaches for remote_backend bumps
@@ -113,9 +113,9 @@ async fn navigation_does_not_contact_remote_backend(cx: &mut gpui::TestAppContex
     });
 }
 
-#[gpui::test]
+#[gpui_kit::test]
 async fn navigation_does_not_contact_remote_backend_without_capture_server(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
 ) {
     // Same as above but without a capture server: the production-side
     // marker must still fail-closed even when the test harness is
@@ -134,28 +134,28 @@ async fn navigation_does_not_contact_remote_backend_without_capture_server(
 // §T029.4 — Test harness: build a minimal app state for navigation tests.
 // ---------------------------------------------------------------------------
 
-fn init_app_state(cx: &mut gpui::TestAppContext) {
+fn init_app_state(cx: &mut gpui_kit::TestAppContext) {
     // T032 must expose `HiveGuiAppState::install_for_test(cx, initial)`
     // — a single entry point that wires the global state and the empty
     // default `Store` into a fresh GPUI app context. Until then this
     // helper fails to compile.
     cx.update(|cx| {
-        gpui_component::theme::init(cx);
-        gpui_component::init(cx);
+        gpui_kit::component::theme::init(cx);
+        gpui_kit::component::init(cx);
         HiveGuiAppState::install_for_test(cx, AppRoute::Home);
     });
 }
 
 fn init_app_state_with_remote_backend_url(
-    cx: &mut gpui::TestAppContext,
+    cx: &mut gpui_kit::TestAppContext,
     _remote_backend_base_url: &str,
 ) {
     // Same as `init_app_state`, but the production code must record
     // the (unused) remote_backend base URL in its `HiveGuiAppState` so any
     // future call to it is loud. The marker is `assert_no_remote_backend_prerequisite`.
     cx.update(|cx| {
-        gpui_component::theme::init(cx);
-        gpui_component::init(cx);
+        gpui_kit::component::theme::init(cx);
+        gpui_kit::component::init(cx);
         HiveGuiAppState::install_for_test(cx, AppRoute::Home);
     });
 }

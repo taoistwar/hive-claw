@@ -6,7 +6,7 @@
 //! T016E `scroll:datasource_form` is the native-scroll tag the
 //! inventory helper (and `datasource_ui_contract.rs`) keys off.
 //! T036 enforces:
-//!   - editable input widgets must be `gpui_component::input::Input`
+//!   - editable input widgets must be `gpui_kit::component::input::Input`
 //!   - the error summary must have a stable focus target
 //!     (`DATASOURCE_FORM_ERROR_SUMMARY`)
 //!   - submit routes through `validate_and_submit`
@@ -17,12 +17,12 @@
 
 use std::{sync::Arc, time::Duration};
 
-use gpui::{
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::input::{Input, InputState};
+use gpui_kit::{
     App, Context, Entity, FocusHandle, Focusable, FontWeight, Hsla, MouseButton, Render,
     ScrollHandle, SharedString, Task, Window, div, prelude::*, px,
 };
-use gpui_component::ActiveTheme as _;
-use gpui_component::input::{Input, InputState};
 
 use crate::datasource::MysqlClient;
 use crate::datasource::data_source_store::{
@@ -682,7 +682,7 @@ impl DataSourceForm {
         border: Hsla,
         background: Hsla,
         label_color: Hsla,
-    ) -> gpui::AnyElement {
+    ) -> gpui_kit::AnyElement {
         div()
             .flex()
             .flex_col()
@@ -744,14 +744,14 @@ fn _policy_pin() -> EmptyPasswordPolicy {
 mod tests {
     use super::{DataSourceForm, FormMode, FormStatus};
     use crate::datasource::Store;
-    use gpui::{
+    use gpui_kit::{
         AppContext as _, Modifiers, Task, TestAppContext, VisualTestContext, WindowHandle, px, size,
     };
 
     fn init_gpui(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
     }
 
@@ -774,7 +774,7 @@ mod tests {
         panic!("timed out waiting for {expected:?}; current status is {actual:?}");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn invalid_submit_focuses_the_error_summary(cx: &mut TestAppContext) {
         init_gpui(cx);
         let store = cx.new(|_| Store::placeholder());
@@ -801,7 +801,7 @@ mod tests {
             .expect("validate datasource form");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn cancel_button_marks_the_form_done(cx: &mut TestAppContext) {
         init_gpui(cx);
         let store = cx.new(|_| Store::placeholder());
@@ -825,7 +825,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn cancelling_a_connection_test_drops_the_in_flight_task(cx: &mut TestAppContext) {
         init_gpui(cx);
         let store = cx.new(|_| Store::placeholder());
@@ -845,7 +845,7 @@ mod tests {
             .expect("cancel in-flight datasource connection test");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn add_form_persists_a_datasource(cx: &mut TestAppContext) {
         init_gpui(cx);
         let temp_dir = tempfile::tempdir().expect("create temporary data directory");
@@ -891,7 +891,7 @@ mod tests {
         assert_eq!(created.username, "tester");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn edit_form_keeps_the_password_when_left_empty(cx: &mut TestAppContext) {
         init_gpui(cx);
         let temp_dir = tempfile::tempdir().expect("create temporary data directory");

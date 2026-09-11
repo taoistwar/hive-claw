@@ -18,13 +18,13 @@ use crate::ui::management_style::{
     management_modal_panel, management_modal_scroll,
 };
 use crate::ui::table_viewer::TableViewer;
-use gpui::prelude::FluentBuilder;
-use gpui::*;
-use gpui_component::ActiveTheme as _;
-use gpui_component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::{Colorize, Sizable};
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::color_picker::{ColorPicker, ColorPickerEvent, ColorPickerState};
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::{Colorize, Sizable};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::*;
 
 pub struct TagView {
     store: Entity<Store>,

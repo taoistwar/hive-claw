@@ -77,7 +77,7 @@ fn normalize_tool_call_id(id: &str) -> String {
     }
     let mut hasher = Sha256::new();
     hasher.update(id.as_bytes());
-    let hex = format!("{:x}", hasher.finalize());
+    let hex = hex::encode(hasher.finalize());
     hex.chars().take(9).collect()
 }
 

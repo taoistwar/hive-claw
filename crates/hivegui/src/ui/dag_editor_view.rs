@@ -7,14 +7,14 @@ use crate::datasource::{
     function_store::FunctionStore,
 };
 use crate::ui::management_style::{ActionRole, ActionSize, ManagementStyle, action_button};
-use gpui::{
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::{
     Bounds, Context, CursorStyle, Entity, FocusHandle, FontWeight, KeyDownEvent, MouseButton,
     MouseDownEvent, MouseMoveEvent, Pixels, Point, ScrollWheelEvent, Window, div, hsla, point,
     prelude::*, px,
 };
-use gpui_component::ActiveTheme as _;
-use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_component::scroll::ScrollableElement;
 use std::collections::HashMap;
 
 /// DAG 节点类型
@@ -2262,7 +2262,7 @@ impl Render for DagEditorView {
     }
 }
 
-fn debug_marker(selector: impl Into<gpui::SharedString>) -> gpui::Stateful<gpui::Div> {
+fn debug_marker(selector: impl Into<gpui_kit::SharedString>) -> gpui_kit::Stateful<gpui_kit::Div> {
     let selector = selector.into();
     let debug_selector = selector.clone();
     div()
@@ -2277,7 +2277,7 @@ fn debug_marker(selector: impl Into<gpui::SharedString>) -> gpui::Stateful<gpui:
 mod tests {
     use std::{cell::RefCell, rc::Rc};
 
-    use gpui::{
+    use gpui_kit::{
         AppContext, Focusable, Modifiers, MouseButton, ScrollDelta, ScrollWheelEvent,
         TestAppContext, TouchPhase, VisualTestContext, WindowHandle, point, px, size,
     };
@@ -2290,12 +2290,12 @@ mod tests {
 
     fn init_gpui(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
     }
 
-    fn test_store(cx: &mut TestAppContext) -> (tempfile::TempDir, gpui::Entity<Store>) {
+    fn test_store(cx: &mut TestAppContext) -> (tempfile::TempDir, gpui_kit::Entity<Store>) {
         let temp_dir = tempfile::tempdir().expect("create temporary data directory");
         let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
         let store = runtime
@@ -2305,8 +2305,8 @@ mod tests {
     }
 
     fn test_editor(
-        store: gpui::Entity<Store>,
-        cx: &mut gpui::Context<DagEditorView>,
+        store: gpui_kit::Entity<Store>,
+        cx: &mut gpui_kit::Context<DagEditorView>,
     ) -> DagEditorView {
         DagEditorView {
             store,
@@ -2360,17 +2360,17 @@ mod tests {
 
     fn open_editor_window(
         cx: &mut TestAppContext,
-        store: gpui::Entity<Store>,
+        store: gpui_kit::Entity<Store>,
     ) -> (
-        WindowHandle<gpui_component::Root>,
-        gpui::Entity<DagEditorView>,
+        WindowHandle<gpui_kit::component::Root>,
+        gpui_kit::Entity<DagEditorView>,
     ) {
         let editor = Rc::new(RefCell::new(None));
         let editor_for_window = editor.clone();
         let window = cx.open_window(size(px(900.0), px(600.0)), move |window, cx| {
             let inner = cx.new(|cx| test_editor(store, cx));
             *editor_for_window.borrow_mut() = Some(inner.clone());
-            gpui_component::Root::new(inner, window, cx).bordered(false)
+            gpui_kit::component::Root::new(inner, window, cx).bordered(false)
         });
         let editor = editor.borrow_mut().take().expect("DAG editor entity");
         (window, editor)
@@ -2417,7 +2417,7 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn empty_workflow_loads_required_start_and_end_nodes(cx: &mut TestAppContext) {
         let (_temp_dir, store) = test_store(cx);
         let editor = cx.new(|cx| test_editor(store, cx));
@@ -2445,7 +2445,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn function_picker_focuses_search_and_opens_suggestions(cx: &mut TestAppContext) {
         init_gpui(cx);
         let (_temp_dir, store) = test_store(cx);
@@ -2487,7 +2487,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn function_picker_filters_name_description_input_and_output(cx: &mut TestAppContext) {
         init_gpui(cx);
         let (_temp_dir, store) = test_store(cx);
@@ -2531,7 +2531,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn right_click_selects_node_and_shows_config_and_delete_actions(cx: &mut TestAppContext) {
         init_gpui(cx);
         let (_temp_dir, store) = test_store(cx);
@@ -2606,7 +2606,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn start_node_config_updates_workflow_input_schema(cx: &mut TestAppContext) {
         init_gpui(cx);
         let (_temp_dir, store) = test_store(cx);
@@ -2639,7 +2639,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn answer_node_config_exposes_hiveweb_workflow_properties(cx: &mut TestAppContext) {
         init_gpui(cx);
         let (_temp_dir, store) = test_store(cx);
@@ -2716,7 +2716,7 @@ mod tests {
         });
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn canvas_wheel_zooms_and_blank_drag_pans_nodes(cx: &mut TestAppContext) {
         init_gpui(cx);
         let (_temp_dir, store) = test_store(cx);
@@ -2786,7 +2786,7 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn function_node_config_edits_and_applies_structured_input_mapping(cx: &mut TestAppContext) {
         init_gpui(cx);
         let (_temp_dir, store) = test_store(cx);

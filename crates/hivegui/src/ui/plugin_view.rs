@@ -20,11 +20,11 @@ use crate::ui::management_style::{
     list_container, list_header, list_header_cell, list_row, management_modal_layer,
     management_modal_panel, management_modal_scroll_content,
 };
-use gpui::prelude::FluentBuilder;
-use gpui::*;
-use gpui_component::ActiveTheme as _;
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::scroll::ScrollableElement;
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::*;
 
 pub struct PluginView {
     store: Entity<Store>,
@@ -1616,7 +1616,7 @@ fn parse_resource_limits(json: &str) -> (String, String, String) {
 fn form_field(
     label: &'static str,
     input: Entity<InputState>,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
 ) -> impl IntoElement {
     div()
         .flex()
@@ -1645,7 +1645,7 @@ fn form_field(
 fn form_field_readonly(
     label: &'static str,
     value: &str,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
 ) -> impl IntoElement {
     div()
         .flex()
@@ -1679,7 +1679,7 @@ fn form_field_readonly(
 
 #[cfg(test)]
 mod tests {
-    use gpui::{
+    use gpui_kit::{
         AppContext, Entity, ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase,
         VisualTestContext, point, px, size,
     };
@@ -1737,7 +1737,7 @@ mod tests {
         assert_eq!(output, "10");
     }
 
-    fn test_view(store: Entity<Store>, cx: &mut gpui::Context<PluginView>) -> PluginView {
+    fn test_view(store: Entity<Store>, cx: &mut gpui_kit::Context<PluginView>) -> PluginView {
         PluginView {
             store,
             items: Vec::new(),
@@ -1747,7 +1747,7 @@ mod tests {
             page_size: 20,
             total_count: 0,
             show_form: false,
-            form_scroll: gpui::ScrollHandle::default(),
+            form_scroll: gpui_kit::ScrollHandle::default(),
             editing_id: None,
             form_identifier: String::new(),
             form_name: String::new(),
@@ -1832,11 +1832,11 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn editing_plugin_records_the_local_wasm_address(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
 
         let temp_dir = tempfile::tempdir().expect("create temporary data directory");
@@ -1861,11 +1861,11 @@ mod tests {
         assert!(cx.debug_bounds("PLUGIN_EXPORTS").is_some());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn plugin_form_stays_inside_the_viewport_and_scrolls(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
 
         let temp_dir = tempfile::tempdir().expect("create temporary data directory");

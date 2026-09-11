@@ -4,15 +4,15 @@ use crate::datasource::entity_store::Tool as DbTool;
 use crate::datasource::llm_store::{LlmModel, LlmPreset, LlmProvider, LlmStore};
 use crate::datasource::{Crypto, Store};
 use crate::ui::management_style::{ActionRole, ManagementStyle};
-use gpui::prelude::FluentBuilder;
-use gpui::*;
-use gpui_component::input::{Input, InputState, Textarea, TextareaState};
-use gpui_component::notification::Notification;
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::{
+use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
+use gpui_kit::component::notification::Notification;
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Root, Sizable, WindowExt,
     select::{SearchableVec, Select, SelectState},
 };
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::*;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -23,7 +23,7 @@ struct ModelSelectItem {
     label: String,
 }
 
-impl gpui_component::searchable_list::SearchableListItem for ModelSelectItem {
+impl gpui_kit::component::searchable_list::SearchableListItem for ModelSelectItem {
     type Value = i64;
 
     fn title(&self) -> SharedString {
@@ -42,7 +42,7 @@ struct PresetSelectItem {
     label: String,
 }
 
-impl gpui_component::searchable_list::SearchableListItem for PresetSelectItem {
+impl gpui_kit::component::searchable_list::SearchableListItem for PresetSelectItem {
     type Value = i64;
 
     fn title(&self) -> SharedString {
@@ -520,7 +520,7 @@ impl PromptDebugger {
         let initial_index = self
             .selected_preset_id
             .and_then(|id| self.presets.iter().position(|preset| preset.id == id))
-            .map(|index| gpui_component::IndexPath::default().row(index));
+            .map(|index| gpui_kit::component::IndexPath::default().row(index));
         let select_state =
             cx.new(|cx| SelectState::new(items, initial_index, window, cx).searchable(true));
 
@@ -557,7 +557,7 @@ impl PromptDebugger {
         let initial_index = self
             .selected_model_id
             .and_then(|sid| models.iter().position(|m| m.id == sid))
-            .map(|ix| gpui_component::IndexPath::default().row(ix));
+            .map(|ix| gpui_kit::component::IndexPath::default().row(ix));
         let select_state =
             cx.new(|cx| SelectState::new(items, initial_index, window, cx).searchable(true));
 
@@ -572,11 +572,11 @@ impl PromptDebugger {
     fn on_preset_select(
         &mut self,
         _: &Entity<SelectState<SearchableVec<PresetSelectItem>>>,
-        event: &gpui_component::select::SelectEvent<SearchableVec<PresetSelectItem>>,
+        event: &gpui_kit::component::select::SelectEvent<SearchableVec<PresetSelectItem>>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let gpui_component::select::SelectEvent::Confirm(preset_id) = event;
+        let gpui_kit::component::select::SelectEvent::Confirm(preset_id) = event;
         let preset_id =
             (*preset_id).filter(|id| self.presets.iter().any(|preset| preset.id == *id));
         if self.selected_preset_id != preset_id {
@@ -592,11 +592,11 @@ impl PromptDebugger {
     fn on_model_select(
         &mut self,
         _: &Entity<SelectState<SearchableVec<ModelSelectItem>>>,
-        event: &gpui_component::select::SelectEvent<SearchableVec<ModelSelectItem>>,
+        event: &gpui_kit::component::select::SelectEvent<SearchableVec<ModelSelectItem>>,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let gpui_component::select::SelectEvent::Confirm(model_id) = event;
+        let gpui_kit::component::select::SelectEvent::Confirm(model_id) = event;
         self.selected_model_id =
             valid_model_selection(&self.models, self.selected_preset_id, *model_id);
         self.form_error = None;
@@ -2286,6 +2286,15 @@ fn right_panel(
                                     .child(
                                         div()
                                             .text_size(px(11.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .text_color(style.list.foreground)
+                                            .child(SharedString::from(
+                                                format!("#{}", record.id).as_str(),
+                                            )),
+                                    )
+                                    .child(
+                                        div()
+                                            .text_size(px(11.0))
                                             .text_color(style.list.muted_foreground)
                                             .child(SharedString::from(time_str.as_str())),
                                     )
@@ -2715,6 +2724,60 @@ fn all_same(records: &[ExecutionRecord], dim: &str) -> bool {
         .all(|r| get_dimension_value(r, dim) == first)
 }
 
+/// JSON 表格的维度行；表头行由各记录的 ID 承载，因此这里不含 ID。
+const JSON_COMPARISON_DIMENSIONS: [&str; 4] = ["模型", "输入", "输出", "Metadata"];
+
+/// 对比表格最多展示的记录列数（与「格式化」对比表一致）。
+const MAX_COMPARISON_COLUMNS: usize = 20;
+
+/// JSON 表格单元格正文（pretty JSON）的高度上限；超出部分在单元格内滚动。
+const JSON_CELL_MAX_HEIGHT: f32 = 280.0;
+
+/// 维度名 → ASCII 键：用于单元格唯一 id 与调试选择器（选择器保持 ASCII）。
+fn json_dimension_key(dim: &str) -> &'static str {
+    match dim {
+        "模型" => "MODEL",
+        "输入" => "INPUT",
+        "输出" => "OUTPUT",
+        _ => "METADATA",
+    }
+}
+
+/// 取一条记录在 JSON 表格某个维度的正文。
+///
+/// `sections` 是 [`record_json_sections`] 的预计算结果：整个表格只序列化一次，
+/// 避免每个单元格各自 prettify 一遍。
+fn json_dimension_value(
+    record: &ExecutionRecord,
+    sections: &(String, String, String),
+    dim: &str,
+) -> String {
+    match dim {
+        "模型" => record.model_name.clone(),
+        "输入" => sections.0.clone(),
+        "输出" => sections.1.clone(),
+        "Metadata" => sections.2.clone(),
+        _ => String::new(),
+    }
+}
+
+/// 检查 JSON 表格某个维度在所有记录中是否完全相同（供「仅看差异」过滤）。
+fn json_all_same(
+    records: &[ExecutionRecord],
+    sections: &[(String, String, String)],
+    dim: &str,
+) -> bool {
+    if records.len() < 2 || sections.len() < 2 {
+        return true;
+    }
+    let first = json_dimension_value(&records[0], &sections[0], dim);
+    records
+        .iter()
+        .skip(1)
+        .zip(sections.iter().skip(1))
+        .all(|(record, section)| json_dimension_value(record, section, dim) == first)
+}
+
 /// 弹窗正文只读文本的最大行数（`auto_grow` 上限）。
 ///
 /// 输入框内部没有滚轮处理器，内容一旦超过 `max_rows` 就会被裁掉且无法滚动，
@@ -2833,11 +2896,7 @@ fn comparison_table(
     });
 
     // 数据行
-    let mut table = div()
-        .w(table_width)
-        .flex()
-        .flex_col()
-        .child(header_row);
+    let mut table = div().w(table_width).flex().flex_col().child(header_row);
 
     for dim in &dimensions {
         // 仅看差异模式：跳过所有记录值相同的维度
@@ -3022,7 +3081,7 @@ fn view_modal(
         // `should_handle_scroll()` 返回 false，从而只滚动弹窗自己。
         // 面板本身是遮罩的子元素（在其之后绘制），不受影响。
         .occlude()
-        .bg(gpui::rgba(0x00000080))
+        .bg(gpui_kit::rgba(0x00000080))
         .flex()
         .items_center()
         .justify_center()
@@ -3082,6 +3141,9 @@ fn view_modal(
                                 .child(if is_comparison {
                                     let checked = show_only_diff;
                                     div()
+                                        .debug_selector(|| {
+                                            "PROMPT_HISTORY_VIEW_ONLY_DIFF".to_owned()
+                                        })
                                         .flex()
                                         .items_center()
                                         .gap(px(4.0))
@@ -3113,7 +3175,7 @@ fn view_modal(
                                                 .child(if checked {
                                                     div()
                                                         .text_size(px(10.0))
-                                                        .text_color(gpui::white())
+                                                        .text_color(gpui_kit::white())
                                                         .child("✓")
                                                 } else {
                                                     div()
@@ -3219,8 +3281,21 @@ fn view_modal(
                                 }
                             }
                             ViewModalTab::Json => {
-                                json_tab_view(records, style, text_states, window, cx)
+                                // 多条对比走横向表格（列 = 各记录），单条仍是纵向分节。
+                                if is_comparison {
+                                    json_comparison_table(
+                                        records,
+                                        style,
+                                        show_only_diff,
+                                        text_states,
+                                        window,
+                                        cx,
+                                    )
                                     .into_any_element()
+                                } else {
+                                    json_tab_view(records, style, text_states, window, cx)
+                                        .into_any_element()
+                                }
                             }
                         }),
                 ),
@@ -3308,7 +3383,187 @@ fn view_modal_tabs(
         )
 }
 
-/// JSON Tab：每条记录一组「输入 / 输出 / Metadata」分节。
+/// JSON Tab（多条对比）：与「格式化」对比表同构的横向表格。
+///
+/// 表头行是各记录的 ID（列身份由 ID 承载），维度行自上而下为
+/// 模型 / 输入 / 输出 / Metadata，每条记录一列并排，便于逐字段对照；
+/// 列数超出弹窗宽度时由内容区已有的水平滚动条左右查看。
+#[allow(clippy::too_many_arguments)]
+fn json_comparison_table(
+    records: &[ExecutionRecord],
+    style: &ManagementStyle,
+    show_only_diff: bool,
+    states: &mut HashMap<String, Entity<TextareaState>>,
+    window: &mut Window,
+    cx: &mut Context<PromptDebugger>,
+) -> Div {
+    // 列宽与 comparison_table 保持一致（弹窗宽度公式已按「标签列 100 + 每列 300」预留）。
+    let label_col_width = px(100.0);
+    let col_width = px(300.0);
+    let col_count = records.len().min(MAX_COMPARISON_COLUMNS);
+    let table_width = label_col_width + col_width * col_count as f32;
+
+    // 每条记录的三段 pretty JSON 只序列化一次，供所有维度行复用。
+    let sections: Vec<(String, String, String)> =
+        records.iter().map(record_json_sections).collect();
+
+    // 表头行：标签列固定「ID」，其后每列显示该条记录的 ID。
+    let mut header_row = div()
+        .flex()
+        .border_b_1()
+        .border_color(style.list.border)
+        .child(
+            div()
+                .w(label_col_width)
+                .flex_shrink_0()
+                .px(px(8.0))
+                .py(px(8.0))
+                .child(
+                    view_selectable_text(
+                        states,
+                        "json:cmp:header:label".to_string(),
+                        "ID",
+                        style,
+                        window,
+                        cx,
+                    )
+                    .font_weight(FontWeight::BOLD),
+                ),
+        );
+    for record in records.iter().take(MAX_COMPARISON_COLUMNS) {
+        header_row = header_row.child(
+            div()
+                .w(col_width)
+                .flex_shrink_0()
+                .px(px(8.0))
+                .py(px(8.0))
+                .child(
+                    view_selectable_text(
+                        states,
+                        format!("json:cmp:header:{}", record.id),
+                        &record.id.to_string(),
+                        style,
+                        window,
+                        cx,
+                    )
+                    .font_weight(FontWeight::BOLD),
+                ),
+        );
+    }
+
+    let mut table = div().w(table_width).flex().flex_col().child(header_row);
+
+    for dim in JSON_COMPARISON_DIMENSIONS {
+        // 「仅看差异」：所有记录在该维度完全相同则跳过该行（与格式化对比表语义一致）。
+        if show_only_diff && json_all_same(records, &sections, dim) {
+            continue;
+        }
+
+        let dim_key = json_dimension_key(dim);
+        let mut row = div()
+            .flex()
+            .border_b_1()
+            .border_color(style.list.border)
+            .child(
+                div()
+                    .w(label_col_width)
+                    .flex_shrink_0()
+                    .px(px(8.0))
+                    .py(px(8.0))
+                    .child(
+                        view_selectable_text(
+                            states,
+                            format!("json:cmp:dim:{dim_key}"),
+                            dim,
+                            style,
+                            window,
+                            cx,
+                        )
+                        .font_weight(FontWeight::SEMIBOLD)
+                        .text_color(style.list.muted_foreground),
+                    ),
+            );
+
+        for (col, (record, section)) in records
+            .iter()
+            .take(MAX_COMPARISON_COLUMNS)
+            .zip(sections.iter())
+            .enumerate()
+        {
+            let text = json_dimension_value(record, section, dim);
+            row = row.child(json_table_cell(
+                col_width,
+                dim_key,
+                record.id,
+                col + 1,
+                &text,
+                style,
+                states,
+                window,
+                cx,
+            ));
+        }
+
+        table = table.child(row);
+    }
+
+    table
+}
+
+/// JSON 对比表格的一个数据单元格：等宽只读正文 + 高度上限 + 单元格内独立纵向滚动。
+///
+/// `col_index` 从 1 开始，仅用于构造唯一的滚动区 id 与调试选择器。
+#[allow(clippy::too_many_arguments)]
+fn json_table_cell(
+    width: Pixels,
+    dim_key: &str,
+    record_id: u64,
+    col_index: usize,
+    text: &str,
+    style: &ManagementStyle,
+    states: &mut HashMap<String, Entity<TextareaState>>,
+    window: &mut Window,
+    cx: &mut Context<PromptDebugger>,
+) -> Div {
+    let panel_selector = format!("PROMPT_VIEW_JSON_CMP_{dim_key}_{col_index}_PANEL");
+    let scroll_id = format!("json-cmp-{dim_key}-{col_index}-scroll");
+    div()
+        .w(width)
+        .flex_shrink_0()
+        .px(px(8.0))
+        .py(px(8.0))
+        .child(
+            div()
+                .debug_selector(move || panel_selector.clone())
+                .bg(style.list.muted)
+                .border_1()
+                .border_color(style.list.border)
+                .rounded(px(6.0))
+                .p(px(10.0))
+                // 单元格限高 + 单元格内滚动：超长 JSON 不会把整行乃至整表顶高，
+                // 也不至于把同一行其它记录的正文挤出可视区。
+                .max_h(px(JSON_CELL_MAX_HEIGHT))
+                .overflow_y_scrollbar()
+                // gpui-component 的 Scrollable 默认用调用点位置作 id，同一调用点
+                // 渲染多个滚动区会共享同一个滚动位置，必须显式给每个单元格独立 id。
+                .id(SharedString::from(scroll_id))
+                .child(
+                    view_selectable_text(
+                        states,
+                        format!("json:cmp:{record_id}:{dim_key}"),
+                        text,
+                        style,
+                        window,
+                        cx,
+                    )
+                    .font_family("monospace"),
+                ),
+        )
+}
+
+/// JSON Tab（单条记录）：输入 / 输出 / Metadata 三段纵向分节。
+///
+/// 多条记录的对比视图见 [`json_comparison_table`]。
 fn json_tab_view(
     records: &[ExecutionRecord],
     style: &ManagementStyle,
@@ -3316,19 +3571,15 @@ fn json_tab_view(
     window: &mut Window,
     cx: &mut Context<PromptDebugger>,
 ) -> Div {
-    div()
-        .flex()
-        .flex_col()
-        .gap(px(16.0))
-        .children(records.iter().enumerate().map(|(idx, record)| {
-            json_record_group(idx, records.len(), record, style, states, window, cx)
-        }))
+    div().flex().flex_col().gap(px(16.0)).children(
+        records
+            .iter()
+            .map(|record| json_record_group(record, style, states, window, cx)),
+    )
 }
 
-/// 单条记录的 JSON 分节组（多条记录对比时先标注序号与模型名）。
+/// 单条记录的 JSON 分节组。
 fn json_record_group(
-    idx: usize,
-    total: usize,
     record: &ExecutionRecord,
     style: &ManagementStyle,
     states: &mut HashMap<String, Entity<TextareaState>>,
@@ -3336,26 +3587,11 @@ fn json_record_group(
     cx: &mut Context<PromptDebugger>,
 ) -> Div {
     let (input, output, metadata) = record_json_sections(record);
-    let base = idx + 1;
-    let group = div().flex().flex_col().gap(px(12.0));
-    let group = if total > 1 {
-        let title = format!("#{} {}", base, record.model_name);
-        group.child(
-            view_selectable_text(
-                states,
-                format!("json:{}:title", record.id),
-                &title,
-                style,
-                window,
-                cx,
-            )
-            .text_size(px(13.0))
-            .font_weight(FontWeight::SEMIBOLD),
-        )
-    } else {
-        group
-    };
-    group
+    let base = 1;
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(12.0))
         .child(json_section(
             "输入",
             &input,
@@ -3403,6 +3639,7 @@ fn json_section(
     let copy_text = text.to_string();
     let copy_id = format!("{base}_COPY");
     let panel_selector = format!("{base}_PANEL");
+    let scroll_id = format!("{base}_SCROLL");
     div()
         .flex()
         .flex_col()
@@ -3446,7 +3683,14 @@ fn json_section(
                 .border_color(style.list.border)
                 .rounded(px(6.0))
                 .p(px(12.0))
-                // 正文用只读输入框渲染：等宽字体 + 可选中可复制。
+                // 单条 JSON 可能很长：限制每节高度并让节内独立纵向滚动，
+                // 否则一个超长分节会把弹窗正文顶得极高。
+                // 正文仍是只读输入框（等宽字体 + 可选中可复制），节容器负责滚动。
+                .max_h(px(JSON_CELL_MAX_HEIGHT))
+                .overflow_y_scrollbar()
+                // 同一个调用点渲染了 3 个分节滚动区：不显式给 id 的话
+                // Scrollable 会按调用点共享同一个滚动位置。
+                .id(SharedString::from(scroll_id))
                 .child(
                     view_selectable_text(
                         states,
@@ -4053,7 +4297,7 @@ impl Render for PromptDebugger {
                     .bottom_0()
                     .left_0()
                     .right_0()
-                    .bg(gpui::rgba(0x00000080))
+                    .bg(gpui_kit::rgba(0x00000080))
                     .flex()
                     .items_center()
                     .justify_center()
@@ -4358,18 +4602,18 @@ mod tests {
 mod geometry_tests {
     use super::{
         CallState, DebugMessage, ExecutionRecord, MessageRole, ModelSelectItem, PresetSelectItem,
-        PromptDebugger, model_selector, preset_selector,
+        PromptDebugger, ViewModalTab, model_selector, preset_selector,
     };
     use crate::datasource::{Store, llm_store::LlmStore};
     use crate::ui::management_style::ManagementStyle;
-    use gpui::{
+    use gpui_kit::component::{
+        ActiveTheme, Root,
+        select::{SearchableVec, SelectState},
+    };
+    use gpui_kit::{
         AppContext, Context, Entity, Focusable, InteractiveElement, IntoElement, Modifiers,
         MouseButton, ParentElement, Render, Styled, TestAppContext, VisualTestContext, Window, div,
         px, size,
-    };
-    use gpui_component::{
-        ActiveTheme, Root,
-        select::{SearchableVec, SelectState},
     };
 
     struct PromptDebuggerTestView;
@@ -4421,7 +4665,7 @@ mod geometry_tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn three_column_layout_dimensions(cx: &mut TestAppContext) {
         let window = cx.open_window(size(px(1200.0), px(700.0)), |_, _| PromptDebuggerTestView);
         cx.run_until_parked();
@@ -4444,11 +4688,11 @@ mod geometry_tests {
         assert_eq!(settings.top(), results.top());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn preset_selector_precedes_and_gates_model_selector(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let window = cx.open_window(size(px(320.0), px(240.0)), |window, cx| {
             let preset = cx.new(|cx| {
@@ -4501,11 +4745,11 @@ mod geometry_tests {
         assert!(!model_is_focused, "disabled model selector accepted focus");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn history_context_menu_opens_the_saved_result(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
 
         let temp_dir = tempfile::tempdir().expect("create temporary data directory");
@@ -4589,11 +4833,11 @@ mod geometry_tests {
         assert!(cx.debug_bounds("PROMPT_HISTORY_VIEW_MODAL").is_some());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn completion_opens_result_view_on_success(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
 
         let temp_dir = tempfile::tempdir().expect("create temporary data directory");
@@ -4642,11 +4886,11 @@ mod geometry_tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn completion_opens_result_view_on_error(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
 
         let temp_dir = tempfile::tempdir().expect("create temporary data directory");
@@ -4693,11 +4937,11 @@ mod geometry_tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn history_view_modal_body_expands_with_content(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
 
         let temp_dir = tempfile::tempdir().expect("create temporary data directory");
@@ -4773,11 +5017,11 @@ mod geometry_tests {
         assert!(panel.top() >= overlay.top());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn history_view_modal_close_button_closes_the_modal(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
 
         let temp_dir = tempfile::tempdir().expect("create temporary data directory");
@@ -4829,11 +5073,11 @@ mod geometry_tests {
         assert!(!show_view_modal, "close button must close the modal");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn history_view_modal_copy_button_writes_clipboard(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
 
         let temp_dir = tempfile::tempdir().expect("create temporary data directory");
@@ -4895,11 +5139,11 @@ mod geometry_tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn history_view_modal_json_tab_shows_sections_and_copies_input(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
 
         let temp_dir = tempfile::tempdir().expect("create temporary data directory");
@@ -4992,11 +5236,11 @@ mod geometry_tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn history_comparison_modal_renders_selectable_text(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
 
         let temp_dir = tempfile::tempdir().expect("create temporary data directory");
@@ -5106,17 +5350,157 @@ mod geometry_tests {
             .update(&mut cx, |view, _window, cx| {
                 view.view_text_states
                     .values()
-                    .all(|state| !state.read(cx).base_state().read(cx).is_editable())
+                    .all(|state| !state.read(cx).is_editable())
             })
             .expect("read comparison text readonly flags");
         assert!(all_readonly, "comparison text must be read-only");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
+    fn history_comparison_json_tab_renders_horizontal_table(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        let _runtime_guard = runtime.enter();
+        let store = cx.new(|_| store);
+
+        let window = cx.open_window(size(px(1200.0), px(700.0)), move |_, cx| {
+            let mut view = PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone());
+            view.loaded = true;
+            // 两条记录共用模型名：切到「仅看差异」后「模型」行应被过滤掉。
+            let mut first = history_record(7);
+            let mut second = history_record(8);
+            first.model_name = "shared-model".to_string();
+            second.model_name = "shared-model".to_string();
+            view.view_records = vec![first, second];
+            view.view_modal_tab = ViewModalTab::Json;
+            view.show_view_modal = true;
+            view
+        });
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        let body = cx
+            .debug_bounds("PROMPT_HISTORY_VIEW_SCROLL")
+            .expect("json comparison body bounds");
+        assert!(
+            body.size.height > px(60.0),
+            "json comparison body collapsed: {:?}",
+            body.size
+        );
+
+        // 列语义：每条记录一列、左右并排且同处一行，而不是逐条上下堆叠。
+        let model_1 = cx
+            .debug_bounds("PROMPT_VIEW_JSON_CMP_MODEL_1_PANEL")
+            .expect("record 1 model cell bounds");
+        let input_1 = cx
+            .debug_bounds("PROMPT_VIEW_JSON_CMP_INPUT_1_PANEL")
+            .expect("record 1 input cell bounds");
+        let input_2 = cx
+            .debug_bounds("PROMPT_VIEW_JSON_CMP_INPUT_2_PANEL")
+            .expect("record 2 input cell bounds");
+        let output_1 = cx
+            .debug_bounds("PROMPT_VIEW_JSON_CMP_OUTPUT_1_PANEL")
+            .expect("record 1 output cell bounds");
+        let metadata_1 = cx
+            .debug_bounds("PROMPT_VIEW_JSON_CMP_METADATA_1_PANEL")
+            .expect("record 1 metadata cell bounds");
+
+        for (name, bounds) in [
+            ("model", model_1),
+            ("input", input_1),
+            ("input(second record)", input_2),
+            ("output", output_1),
+            ("metadata", metadata_1),
+        ] {
+            assert!(
+                bounds.size.height > px(0.0),
+                "{name} cell collapsed: {:?}",
+                bounds.size
+            );
+            assert!(
+                bounds.size.width > px(200.0),
+                "{name} cell is narrower than one column: {:?}",
+                bounds.size
+            );
+        }
+        assert_eq!(input_1.top(), input_2.top(), "records must share one row");
+        assert!(
+            input_1.right() <= input_2.left(),
+            "record 2 must be laid out to the right of record 1"
+        );
+
+        // 行语义：模型 → 输入 → 输出 → Metadata 自上而下。
+        assert!(
+            model_1.bottom() <= input_1.top(),
+            "model row must precede input row"
+        );
+        assert!(
+            input_1.bottom() <= output_1.top(),
+            "input row must precede output row"
+        );
+        assert!(
+            output_1.bottom() <= metadata_1.top(),
+            "output row must precede metadata row"
+        );
+
+        // 单元格正文：表头列是各记录 ID，数据列取各自记录的 pretty JSON。
+        let cells = typed_window
+            .update(&mut cx, |view, _, cx| {
+                view.view_text_states
+                    .iter()
+                    .map(|(key, state)| (key.clone(), state.read(cx).value().to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .expect("read json comparison text states");
+        let cell = |key: &str| {
+            cells
+                .iter()
+                .find(|(cell_key, _)| cell_key == key)
+                .unwrap_or_else(|| panic!("{key} missing, got {cells:?}"))
+                .1
+                .clone()
+        };
+        assert_eq!(cell("json:cmp:header:7"), "7");
+        assert_eq!(cell("json:cmp:header:8"), "8");
+        assert!(cell("json:cmp:7:INPUT").contains("\"content\": \"prompt-7\""));
+        assert!(cell("json:cmp:8:INPUT").contains("\"content\": \"prompt-8\""));
+        assert!(cell("json:cmp:7:OUTPUT").contains("result-7"));
+        assert!(cell("json:cmp:8:OUTPUT").contains("result-8"));
+
+        // 「仅看差异」：模型名相同 → 过滤「模型」行；存在差异的维度行保留。
+        let only_diff = cx
+            .debug_bounds("PROMPT_HISTORY_VIEW_ONLY_DIFF")
+            .expect("only-diff checkbox bounds");
+        cx.simulate_click(only_diff.center(), Modifiers::default());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("PROMPT_VIEW_JSON_CMP_MODEL_1_PANEL")
+                .is_none(),
+            "identical model row must be hidden in only-diff mode"
+        );
+        assert!(
+            cx.debug_bounds("PROMPT_VIEW_JSON_CMP_INPUT_1_PANEL")
+                .is_some(),
+            "differing input row must stay visible in only-diff mode"
+        );
+    }
+
+    #[gpui_kit::test]
     fn execute_without_preset_shows_left_form_error(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
 
         let temp_dir = tempfile::tempdir().expect("create temporary data directory");
@@ -5168,11 +5552,11 @@ mod geometry_tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn selecting_preset_or_model_clears_left_form_error(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
 
         let temp_dir = tempfile::tempdir().expect("create temporary data directory");
@@ -5201,7 +5585,7 @@ mod geometry_tests {
                 let state = view.preset_select_state.clone().unwrap();
                 view.on_preset_select(
                     &state,
-                    &gpui_component::select::SelectEvent::Confirm(Some(1)),
+                    &gpui_kit::component::select::SelectEvent::Confirm(Some(1)),
                     window,
                     cx,
                 );
@@ -5247,13 +5631,13 @@ mod geometry_tests {
         cx: &mut TestAppContext,
         count: u64,
     ) -> (
-        gpui::WindowHandle<PromptDebugger>,
+        gpui_kit::WindowHandle<PromptDebugger>,
         tempfile::TempDir,
         &'static tokio::runtime::Runtime,
     ) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
 
         let temp_dir = tempfile::tempdir().expect("create temporary data directory");
@@ -5277,7 +5661,7 @@ mod geometry_tests {
         (window, temp_dir, runtime)
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn history_panel_pagination_selection_and_deletion(cx: &mut TestAppContext) {
         let (window, _temp_dir, _runtime) = open_debugger_with_history(cx, 12);
         cx.run_until_parked();

@@ -1,13 +1,13 @@
 use std::ops::Range;
 
-use gpui::{
+use gpui_kit::{
     App, Bounds, ClipboardItem, Context, CursorStyle, DefiniteLength, ElementInputHandler, Entity,
     EntityInputHandler, FocusHandle, Focusable, MouseButton, PaintQuad, Pixels, Point, ShapedLine,
     SharedString, UTF16Selection, UnderlineStyle, Window, actions, div, fill, hsla, prelude::*, px,
     rgba,
 };
 
-actions!(
+gpui_kit::actions!(
     input,
     [
         Backspace,
@@ -139,7 +139,7 @@ impl TextInput {
 
     fn on_mouse_down(
         &mut self,
-        event: &gpui::MouseDownEvent,
+        event: &gpui_kit::MouseDownEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -153,7 +153,7 @@ impl TextInput {
 
     fn on_mouse_up(
         &mut self,
-        _event: &gpui::MouseUpEvent,
+        _event: &gpui_kit::MouseUpEvent,
         _window: &mut Window,
         _cx: &mut Context<Self>,
     ) {
@@ -162,7 +162,7 @@ impl TextInput {
 
     fn on_mouse_move(
         &mut self,
-        event: &gpui::MouseMoveEvent,
+        event: &gpui_kit::MouseMoveEvent,
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -503,7 +503,7 @@ impl Element for TextInputElement {
     type RequestLayoutState = ();
     type PrepaintState = PrepaintState;
 
-    fn id(&self) -> Option<gpui::ElementId> {
+    fn id(&self) -> Option<gpui_kit::ElementId> {
         None
     }
 
@@ -513,21 +513,21 @@ impl Element for TextInputElement {
 
     fn request_layout(
         &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _id: Option<&gpui_kit::GlobalElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
         window: &mut Window,
         cx: &mut App,
-    ) -> (gpui::LayoutId, Self::RequestLayoutState) {
-        let mut style = gpui::Style::default();
-        style.size.width = gpui::Length::Definite(DefiniteLength::Fraction(1.0));
+    ) -> (gpui_kit::LayoutId, Self::RequestLayoutState) {
+        let mut style = gpui_kit::Style::default();
+        style.size.width = gpui_kit::Length::Definite(DefiniteLength::Fraction(1.0));
         style.size.height = window.line_height().into();
         (window.request_layout(style, [], cx), ())
     }
 
     fn prepaint(
         &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _id: Option<&gpui_kit::GlobalElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         window: &mut Window,
@@ -561,7 +561,7 @@ impl Element for TextInputElement {
 
         // GPUI TextRun.len expects the count of Unicode scalar values (Rust chars).
         let text_char_count = display_text.chars().count();
-        let run = gpui::TextRun {
+        let run = gpui_kit::TextRun {
             len: text_char_count,
             font: style.font(),
             color: text_color,
@@ -578,14 +578,14 @@ impl Element for TextInputElement {
             let marked_chars = display_text[start..end].chars().count();
             let after_chars = text_char_count - before_chars - marked_chars;
 
-            let mut result_runs: Vec<gpui::TextRun> = Vec::new();
+            let mut result_runs: Vec<gpui_kit::TextRun> = Vec::new();
             if before_chars > 0 {
-                result_runs.push(gpui::TextRun {
+                result_runs.push(gpui_kit::TextRun {
                     len: before_chars,
                     ..run.clone()
                 });
             }
-            result_runs.push(gpui::TextRun {
+            result_runs.push(gpui_kit::TextRun {
                 len: marked_chars,
                 underline: Some(UnderlineStyle {
                     color: Some(run.color),
@@ -595,7 +595,7 @@ impl Element for TextInputElement {
                 ..run.clone()
             });
             if after_chars > 0 {
-                result_runs.push(gpui::TextRun {
+                result_runs.push(gpui_kit::TextRun {
                     len: after_chars,
                     ..run
                 });
@@ -621,9 +621,9 @@ impl Element for TextInputElement {
                 Some(fill(
                     Bounds::new(
                         Point::new(bounds.left() + cursor_pos, bounds.top()),
-                        gpui::size(px(2.), bounds.bottom() - bounds.top()),
+                        gpui_kit::size(px(2.), bounds.bottom() - bounds.top()),
                     ),
-                    gpui::blue(),
+                    gpui_kit::blue(),
                 )),
             )
         } else {
@@ -653,8 +653,8 @@ impl Element for TextInputElement {
 
     fn paint(
         &mut self,
-        _id: Option<&gpui::GlobalElementId>,
-        _inspector_id: Option<&gpui::InspectorElementId>,
+        _id: Option<&gpui_kit::GlobalElementId>,
+        _inspector_id: Option<&gpui_kit::InspectorElementId>,
         bounds: Bounds<Pixels>,
         _request_layout: &mut Self::RequestLayoutState,
         prepaint: &mut Self::PrepaintState,
@@ -674,7 +674,7 @@ impl Element for TextInputElement {
         line.paint(
             bounds.origin,
             window.line_height(),
-            gpui::TextAlign::Left,
+            gpui_kit::TextAlign::Left,
             None,
             window,
             cx,

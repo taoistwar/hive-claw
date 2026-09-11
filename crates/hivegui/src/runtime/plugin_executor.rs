@@ -265,7 +265,7 @@ impl InstanceCacheKey {
 
         let mut hasher = Sha256::new();
         hasher.update(&buf);
-        format!("{:x}", hasher.finalize())
+        hex::encode(hasher.finalize())
     }
 
     /// Artifact SHA-256 (lower-case hex).
@@ -1240,7 +1240,7 @@ fn capability_policy_hash(capabilities: &[String]) -> String {
         hasher.update((capability.len() as u64).to_be_bytes());
         hasher.update(capability.as_bytes());
     }
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }
 
 /// Compute the lower-case SHA-256 hex digest of a byte slice.
@@ -1251,5 +1251,5 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(bytes);
-    format!("{:x}", hasher.finalize())
+    hex::encode(hasher.finalize())
 }

@@ -25,7 +25,7 @@
 //!
 //! The pool used by sqlx needs a tokio runtime, so the assertions
 //! below use `#[tokio::test(flavor = "current_thread")]` rather
-//! than `#[gpui::test]`. T038 provides the `DataSourceStore`
+//! than `#[gpui_kit::test]`. T038 provides the `DataSourceStore`
 //! public boundary the assertions drive; T040 reruns to record
 //! the Green evidence.
 //!

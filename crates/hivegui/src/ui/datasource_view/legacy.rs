@@ -5,8 +5,8 @@
 
 #![allow(dead_code)]
 
-use gpui::{Context, CursorStyle, Entity, MouseButton, Window, div, prelude::*, px};
-use gpui_component::ActiveTheme as _;
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::{Context, CursorStyle, Entity, MouseButton, Window, div, prelude::*, px};
 
 use crate::datasource::Store;
 use crate::ui::{
@@ -38,7 +38,7 @@ pub struct SplitterDrag {
     pub start_widths: (f32, f32),
 }
 
-impl gpui::Global for SplitterDrag {}
+impl gpui_kit::Global for SplitterDrag {}
 
 const MIN_WIDTH: f32 = 100.0;
 const DEFAULT_LEFT_WIDTH: f32 = 280.0;
@@ -64,7 +64,7 @@ impl DataSourceView {
     }
 }
 
-impl gpui::Render for DataSourceView {
+impl gpui_kit::Render for DataSourceView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.sync(window, cx);
         let style = ManagementStyle::current(cx);
@@ -90,7 +90,7 @@ impl gpui::Render for DataSourceView {
             .hover(move |el| el.bg(splitter_hover))
             .on_mouse_down(MouseButton::Left, {
                 let current_left = left_width;
-                move |event: &gpui::MouseDownEvent, _window, cx| {
+                move |event: &gpui_kit::MouseDownEvent, _window, cx| {
                     cx.set_global(SplitterDrag {
                         splitter_index: 0,
                         start_x: event.position.x.into(),
@@ -354,19 +354,19 @@ mod tests {
         table_viewer::TableViewer,
         tree_nav::{TreeNav, TreeNode},
     };
-    use gpui::{AppContext as _, Modifiers, TestAppContext, VisualTestContext, px, size};
+    use gpui_kit::{AppContext as _, Modifiers, TestAppContext, VisualTestContext, px, size};
 
     fn init_gpui(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
     }
 
     fn test_view(
-        store: gpui::Entity<Store>,
+        store: gpui_kit::Entity<Store>,
         nodes: Vec<TreeNode>,
-        cx: &mut gpui::Context<DataSourceView>,
+        cx: &mut gpui_kit::Context<DataSourceView>,
     ) -> DataSourceView {
         let tree = cx.new(|cx| {
             let mut tree = TreeNav::new(cx);
@@ -401,7 +401,7 @@ mod tests {
         assert!(form.bottom() <= viewport.bottom());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn add_button_opens_a_visible_datasource_form(cx: &mut TestAppContext) {
         init_gpui(cx);
         let store = cx.new(|_| Store::placeholder());
@@ -426,7 +426,7 @@ mod tests {
         assert_form_visible(&mut cx);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn edit_button_opens_a_visible_datasource_form(cx: &mut TestAppContext) {
         init_gpui(cx);
         let store = cx.new(|_| Store::placeholder());
@@ -461,7 +461,7 @@ mod tests {
         assert_form_visible(&mut cx);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn cancel_button_closes_the_datasource_form(cx: &mut TestAppContext) {
         init_gpui(cx);
         let store = cx.new(|_| Store::placeholder());

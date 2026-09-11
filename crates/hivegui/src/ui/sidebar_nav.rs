@@ -7,22 +7,22 @@
 //! activation, AccessKit names, and the `SIDEBAR_FOCUS-{key}` /
 //! `SIDEBAR_A11Y-{key}` selectors exercised by `tests/accessibility.rs`.
 
-use gpui::{
-    Anchor, AnyElement, App, Context, CursorStyle, Div, FocusHandle, IntoElement, KeyBinding,
-    KeyDownEvent, Render, SharedString, Stateful, Window, actions, div, prelude::*, px,
-};
-use gpui_component::{
+use gpui_kit::component::{
     ActiveTheme as _, Icon, IconName, Sizable,
     button::{Button, ButtonVariants as _},
     menu::{DropdownMenu as _, PopupMenuItem},
     theme::ThemeRegistry,
     tooltip::Tooltip,
 };
+use gpui_kit::{
+    Anchor, AnyElement, App, Context, CursorStyle, Div, FocusHandle, IntoElement, KeyBinding,
+    KeyDownEvent, Render, SharedString, Stateful, Window, div, prelude::*, px,
+};
 
 use crate::ui::app::{AccessKitLabelRegistry, AppRoute, HiveGuiAppState};
 use crate::ui::theme_contrast;
 
-actions!(hivegui_sidebar, [SidebarTab, SidebarTabPrev]);
+gpui_kit::actions!(hivegui_sidebar, [SidebarTab, SidebarTabPrev]);
 
 /// Stable key for a sidebar nav button. Mirrors the visible debug
 /// selectors (`SIDEBAR_FOCUS-{key}` and `SIDEBAR_A11Y-{key}`) that
@@ -75,19 +75,19 @@ fn sidebar_focusable_element(key: SidebarKey) -> Stateful<Div> {
     div()
         .id(id)
         .accessibility_id(format!("hivegui-sidebar-{id}"))
-        .role(gpui::accesskit::Role::Button)
+        .role(gpui_kit::accesskit::Role::Button)
         .aria_label(key.visible_label())
 }
 
 /// Build the exact focusable base element used by the production sidebar and
 /// ask GPUI to populate a real AccessKit node.
 #[doc(hidden)]
-pub fn sidebar_focusable_accesskit_probe(key: SidebarKey) -> gpui::accesskit::Node {
+pub fn sidebar_focusable_accesskit_probe(key: SidebarKey) -> gpui_kit::accesskit::Node {
     let element = sidebar_focusable_element(key);
     let role = element
         .a11y_role()
         .expect("sidebar focus targets always expose an AccessKit role");
-    let mut node = gpui::accesskit::Node::new(role);
+    let mut node = gpui_kit::accesskit::Node::new(role);
     element.write_a11y_info(&mut node);
     node
 }
@@ -154,7 +154,7 @@ impl SidebarNav {
     /// is deterministic from the very first keystroke. The
     /// production `new` constructor cannot do this because the
     /// root view has no window handle at construction time.
-    pub fn for_test(window: &mut gpui::Window, cx: &mut Context<Self>) -> Self {
+    pub fn for_test(window: &mut gpui_kit::Window, cx: &mut Context<Self>) -> Self {
         let mut this = Self::new(cx);
         window.focus(&this.focus_home, cx);
         this.focused_index = 0;
@@ -268,9 +268,9 @@ fn sidebar_layout(
     ai: impl IntoElement,
     tools: impl IntoElement,
     user_config: impl IntoElement,
-    background: gpui::Hsla,
-    foreground: gpui::Hsla,
-) -> gpui::Div {
+    background: gpui_kit::Hsla,
+    foreground: gpui_kit::Hsla,
+) -> gpui_kit::Div {
     div()
         .flex()
         .flex_col()
@@ -299,7 +299,7 @@ fn sidebar_layout(
         )
 }
 
-fn sidebar_slot(child: impl IntoElement) -> gpui::Div {
+fn sidebar_slot(child: impl IntoElement) -> gpui_kit::Div {
     div().w(px(40.0)).h(px(40.0)).flex_shrink_0().child(child)
 }
 
@@ -619,11 +619,11 @@ impl SidebarNav {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{
+    use gpui_kit::component::theme::{Theme, ThemeRegistry};
+    use gpui_kit::{
         Context, Hsla, IntoElement, Render, SharedString, TestAppContext, VisualTestContext,
         Window, div, prelude::*, px, rgb, size,
     };
-    use gpui_component::theme::{Theme, ThemeRegistry};
 
     use super::{SidebarNav, sidebar_layout, switch_theme, theme_menu_options};
     use crate::ui::app::{AppRoute, HiveGuiAppState};
@@ -646,7 +646,7 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn extension_and_system_settings_are_removed_from_top_group(cx: &mut TestAppContext) {
         let window = cx.open_window(size(px(48.0), px(640.0)), |_, _| SidebarLayoutTestView);
         cx.run_until_parked();
@@ -665,16 +665,16 @@ mod tests {
         assert!(tools.bottom() < user_config.top());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn rendered_sidebar_fills_its_parent_height(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
             HiveGuiAppState::install_for_test(cx, AppRoute::Home);
         });
         let window = cx.open_window(size(px(48.0), px(640.0)), |window, cx| {
             let sidebar = cx.new(|cx| SidebarNav::for_test(window, cx));
-            gpui_component::Root::new(sidebar, window, cx).bordered(false)
+            gpui_kit::component::Root::new(sidebar, window, cx).bordered(false)
         });
         cx.run_until_parked();
 
@@ -702,10 +702,10 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn built_in_light_and_dark_themes_meet_wcag_contrast_contract(cx: &mut TestAppContext) {
         let (light, dark) = cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             HiveGuiAppState::install_for_test(cx, AppRoute::Home);
 
             switch_theme(&SharedString::from("Default Light"), cx);
@@ -720,10 +720,10 @@ mod tests {
         assert_theme_contrast("Default Dark", &dark);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn startup_contrast_policy_hardens_the_active_theme(cx: &mut TestAppContext) {
         let theme = cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             HiveGuiAppState::install_for_test(cx, AppRoute::Home);
             theme_contrast::install(cx);
             Theme::global(cx).clone()
@@ -732,10 +732,10 @@ mod tests {
         assert_theme_contrast("active startup theme", &theme);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn registry_hot_reload_reapplies_contrast_policy(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::init(cx);
+            gpui_kit::component::init(cx);
             HiveGuiAppState::install_for_test(cx, AppRoute::Home);
             theme_contrast::install(cx);
 

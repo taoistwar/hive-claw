@@ -1,9 +1,7 @@
 use anyhow::{Result, bail};
-use chacha20poly1305::{
-    ChaCha20Poly1305, KeyInit, Nonce,
-    aead::rand_core::RngCore,
-    aead::{Aead, OsRng},
-};
+use chacha20poly1305::{ChaCha20Poly1305, KeyInit, Nonce, aead::Aead};
+use rand::RngCore;
+use rand::rngs::OsRng;
 use zeroize::Zeroize;
 
 const KEY_SIZE: usize = 32;
@@ -52,10 +50,10 @@ impl Crypto {
 
         let mut nonce_bytes = [0u8; NONCE_SIZE];
         OsRng.fill_bytes(&mut nonce_bytes);
-        let nonce = Nonce::from_slice(&nonce_bytes);
+        let nonce = Nonce::from(nonce_bytes);
 
         let ciphertext = cipher
-            .encrypt(nonce, plaintext)
+            .encrypt(&nonce, plaintext)
             .map_err(|e| anyhow::anyhow!("Encryption failed: {e}"))?;
 
         let mut result = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
@@ -71,13 +69,14 @@ impl Crypto {
         }
 
         let (nonce_bytes, ciphertext) = encrypted_data.split_at(NONCE_SIZE);
-        let nonce = Nonce::from_slice(nonce_bytes);
+        let nonce = Nonce::try_from(nonce_bytes)
+            .map_err(|_| anyhow::anyhow!("Invalid nonce length: {}", nonce_bytes.len()))?;
 
         let cipher = ChaCha20Poly1305::new_from_slice(&self.key)
             .map_err(|e| anyhow::anyhow!("Failed to create cipher: {e}"))?;
 
         let plaintext = cipher
-            .decrypt(nonce, ciphertext)
+            .decrypt(&nonce, ciphertext)
             .map_err(|e| anyhow::anyhow!("Decryption failed: {e}"))?;
 
         Ok(plaintext)

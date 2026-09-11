@@ -10,14 +10,14 @@ use crate::ui::management_style::{
     list_container, list_header, list_header_cell, list_row, management_modal_layer,
     management_modal_panel, management_modal_scroll,
 };
-use gpui::prelude::FluentBuilder;
-use gpui::*;
-use gpui_component::ActiveTheme as _;
-use gpui_component::FocusTrapElement as _;
-use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_component::scroll::{Scrollable, ScrollableElement};
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::FocusTrapElement as _;
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::scroll::{Scrollable, ScrollableElement};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::*;
 
-actions!(hivegui_tool_form, [ToolFormTab, ToolFormTabPrev]);
+gpui_kit::actions!(hivegui_tool_form, [ToolFormTab, ToolFormTabPrev]);
 
 pub struct ToolView {
     store: Entity<Store>,
@@ -172,6 +172,9 @@ impl ToolView {
                 .placeholder("唯一标识符")
                 .default_value("")
         }));
+        if let Some(input) = &self.identifier_input {
+            input.focus_handle(cx).focus(window, cx);
+        }
         self.name_input = Some(cx.new(|cx| {
             InputState::new(window, cx)
                 .placeholder("工具名称")
@@ -552,7 +555,7 @@ fn selector_field(
     value: impl Into<SharedString>,
     id: impl Into<ElementId>,
     debug_selector: &'static str,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
     on_toggle: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> Div {
     div()
@@ -586,7 +589,7 @@ fn selector_field(
         )
 }
 
-fn selector_menu(theme: &gpui_component::theme::Theme) -> Scrollable<Div> {
+fn selector_menu(theme: &gpui_kit::component::theme::Theme) -> Scrollable<Div> {
     div()
         .flex()
         .flex_col()
@@ -603,7 +606,7 @@ fn selector_option(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     selected: bool,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
     on_select: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     let list_hover = theme.list_hover;
@@ -632,6 +635,9 @@ impl Render for ToolView {
                     .placeholder("唯一标识符")
                     .default_value(&self.form_identifier)
             }));
+            if let Some(input) = &self.identifier_input {
+                input.read(cx).focus_handle(cx).focus(window, cx);
+            }
             self.name_input = Some(cx.new(|cx| {
                 InputState::new(window, cx)
                     .placeholder("工具名称")
@@ -996,7 +1002,7 @@ impl Render for ToolView {
                             management_modal_panel(
                                 management_modal_layer(
                                     px(550.0),
-                                    window.bounds().size.height - px(160.0),
+                                    window.bounds().size.height - px(48.0),
                                 ),
                                 theme.popover,
                                 theme.foreground,
@@ -1441,13 +1447,20 @@ fn form_field(
     label: &'static str,
     input: Entity<InputState>,
     selector: &'static str,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
 ) -> impl IntoElement {
     div()
         .debug_selector(move || selector.to_string())
         .flex()
         .flex_col()
         .gap(px(4.0))
+        .on_mouse_down(MouseButton::Left, {
+            let input = input.clone();
+            move |_, window, cx| {
+                input
+                    .update(cx, |state, cx| state.focus_handle(cx).focus(window, cx));
+            }
+        })
         .child(div().text_size(px(13.0)).child(label))
         .child(
             Input::new(&input)
@@ -1464,13 +1477,20 @@ fn textarea_field(
     label: &'static str,
     input: Entity<TextareaState>,
     selector: &'static str,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
 ) -> impl IntoElement {
     div()
         .debug_selector(move || selector.to_string())
         .flex()
         .flex_col()
         .gap(px(4.0))
+        .on_mouse_down(MouseButton::Left, {
+            let input = input.clone();
+            move |_, window, cx| {
+                input
+                    .update(cx, |state, cx| state.focus_handle(cx).focus(window, cx));
+            }
+        })
         .child(div().text_size(px(13.0)).child(label))
         .child(
             Textarea::new(&input)

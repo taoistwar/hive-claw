@@ -26,12 +26,12 @@ use crate::ui::management_style::{
     list_container, list_header, list_header_cell, list_row, management_modal_layer,
     management_modal_panel, management_modal_scroll,
 };
-use gpui::prelude::*;
-use gpui::*;
-use gpui_component::ActiveTheme as _;
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::tab::{Tab, TabBar};
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::tab::{Tab, TabBar};
+use gpui_kit::prelude::*;
+use gpui_kit::*;
 use providers::PROVIDERS;
 
 pub struct LLMConfigView {
@@ -1418,18 +1418,18 @@ impl Render for LLMConfigView {
 #[cfg(test)]
 mod tests {
     use crate::datasource::llm_store::{LlmModel, LlmPreset, LlmProvider};
-    use gpui::{
+    use gpui_kit::{
         ScrollDelta, ScrollWheelEvent, TestAppContext, TouchPhase, VisualTestContext, point, px,
         size,
     };
 
     use super::LLMConfigView;
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn provider_modal_and_category_menu_stay_inside_the_viewport(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let window = cx.open_window(size(px(800.0), px(500.0)), |_, cx| {
             let mut view = LLMConfigView::new(cx);
@@ -1519,11 +1519,11 @@ mod tests {
         assert!(actions_after_outer_scroll.bottom() <= modal.bottom());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn model_and_provider_lists_show_id_columns(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let window = cx.open_window(size(px(1000.0), px(600.0)), |_, cx| {
             let mut view = LLMConfigView::new(cx);
@@ -1579,11 +1579,11 @@ mod tests {
         assert!(cx.debug_bounds("PROVIDER_ID_9").is_some());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn model_list_matches_reference_geometry(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let window = cx.open_window(size(px(1000.0), px(600.0)), |_, cx| {
             let mut view = LLMConfigView::new(cx);

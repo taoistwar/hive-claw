@@ -424,7 +424,7 @@ fn wrap_kek_verifier_full(kek: &Secret32) -> Result<Vec<u8>, AuthError> {
     let mut nonce = [0u8; 12];
     rand::RngCore::fill_bytes(&mut rand::rngs::OsRng, &mut nonce);
     let ct = cipher
-        .encrypt(Nonce::from_slice(&nonce), &[][..])
+        .encrypt(&Nonce::from(nonce), &[][..])
         .map_err(|err| AuthError::KeystoreMalformed(err.to_string()))?;
     let mut out = Vec::with_capacity(12 + ct.len());
     out.extend_from_slice(&nonce);

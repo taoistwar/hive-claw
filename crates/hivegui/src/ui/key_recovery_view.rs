@@ -22,12 +22,12 @@
 
 use std::sync::Arc;
 
-use gpui::{
+use gpui_kit::{
     Context, Entity, FocusHandle, IntoElement, KeyBinding, KeyDownEvent, Render, Styled, Window,
-    actions, div, prelude::*, px,
+    div, prelude::*, px,
 };
 
-actions!(hivegui_key_recovery, [KeyRecoveryTab, KeyRecoveryTabPrev]);
+gpui_kit::actions!(hivegui_key_recovery, [KeyRecoveryTab, KeyRecoveryTabPrev]);
 
 /// A user action triggered from the key recovery view.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -377,7 +377,7 @@ impl Render for KeyRecoveryView {
 /// Focus global used by the key recovery view to trap keyboard focus.
 #[derive(Default)]
 pub struct KeyRecoveryFocus(pub Option<Entity<()>>);
-impl gpui::Global for KeyRecoveryFocus {}
+impl gpui_kit::Global for KeyRecoveryFocus {}
 
 const STRINGS: StringsZh = StringsZh {
     zh_key_recovery_title: "设备密钥恢复",

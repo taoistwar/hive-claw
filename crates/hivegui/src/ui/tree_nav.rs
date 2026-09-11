@@ -1,8 +1,8 @@
-use gpui::{
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::{
     AnyElement, Context, CursorStyle, Entity, Hsla, MouseButton, ScrollHandle, SharedString,
     Window, div, prelude::*, px,
 };
-use gpui_component::ActiveTheme as _;
 
 use crate::datasource::{MysqlClient, Store, TableInfo};
 use crate::ui::management_style::{ActionRole, ActionSize, ManagementStyle, action_button};
@@ -855,18 +855,18 @@ impl Render for TreeNav {
 
 #[cfg(test)]
 mod tests {
-    use gpui::{
+    use gpui_kit::{
         Modifiers, MouseButton, MouseDownEvent, MouseUpEvent, TestAppContext, VisualTestContext,
         px, size,
     };
 
     use super::{DatabaseNode, TableInfo, TreeNav, TreeNode};
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn double_clicking_a_database_keeps_its_cached_tables_visible(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
 
         let window = cx.open_window(size(px(420.0), px(360.0)), |_, cx| {

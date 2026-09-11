@@ -10,12 +10,12 @@ use crate::ui::management_style::{
     list_container, list_header, list_header_cell, list_row, management_modal_layer,
     management_modal_panel, management_modal_scroll,
 };
-use gpui::prelude::FluentBuilder;
-use gpui::*;
-use gpui_component::ActiveTheme as _;
-use gpui_component::FocusTrapElement as _;
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::scroll::ScrollableElement;
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::FocusTrapElement as _;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::*;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ReferenceLoadState {
@@ -965,7 +965,7 @@ impl Render for AgentView {
                             management_modal_panel(
                                 management_modal_layer(
                                     px(620.0),
-                                    window.bounds().size.height - px(160.0),
+                                    window.bounds().size.height - px(48.0),
                                 ),
                                 theme.popover,
                                 theme.foreground,
@@ -1508,13 +1508,19 @@ fn form_field(
     input: Entity<InputState>,
     selector: &'static str,
     value_selector: Option<String>,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
 ) -> impl IntoElement {
     let selector = selector.to_string();
     div()
         .flex()
         .flex_col()
         .gap(px(4.0))
+        .on_mouse_down(MouseButton::Left, {
+            let input = input.clone();
+            move |_, window, cx| {
+                input.update(cx, |state, cx| state.focus_handle(cx).focus(window, cx));
+            }
+        })
         .child(
             div()
                 .text_size(px(13.0))

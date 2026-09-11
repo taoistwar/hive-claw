@@ -1,12 +1,13 @@
-use gpui::*;
-use gpui_component::input::{Editor, EditorState, TabSize};
-use gpui_component::*;
+use gpui_kit::component::input::{Editor, EditorState, TabSize};
+use gpui_kit::component::*;
+use gpui_kit::*;
 pub struct HelloWorld;
 
 impl Render for HelloWorld {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let editor = cx.new(|cx| {
-            EditorState::new("rust", window, cx)
+            EditorState::new(window, cx)
+                .language("rust")
                 .line_number(true)
                 .folding(true)
                 .tab_size(TabSize {
@@ -21,11 +22,11 @@ impl Render for HelloWorld {
 }
 
 fn main() {
-    let app = gpui_platform::application().with_assets(gpui_component_assets::Assets);
+    let app = gpui_kit::application().with_assets(gpui_kit_assets::Assets);
 
     app.run(move |cx| {
         // This must be called before using any GPUI Component features.
-        gpui_component::init(cx);
+        gpui_kit::init(cx);
 
         cx.spawn(async move |cx| {
             cx.open_window(WindowOptions::default(), |window, cx| {

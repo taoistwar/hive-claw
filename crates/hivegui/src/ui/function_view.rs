@@ -12,14 +12,14 @@ use crate::ui::management_style::{
     list_container, list_header, list_header_cell, list_row, management_modal_layer,
     management_modal_panel, management_modal_scroll,
 };
-use gpui::prelude::FluentBuilder;
-use gpui::*;
-use gpui_component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
-use gpui_component::scroll::{Scrollable, ScrollableElement};
-use gpui_component::{ActiveTheme as _, FocusTrapElement as _};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
+use gpui_kit::component::scroll::{Scrollable, ScrollableElement};
+use gpui_kit::component::{ActiveTheme as _, FocusTrapElement as _};
+use gpui_kit::prelude::FluentBuilder;
+use gpui_kit::*;
 use std::collections::{HashMap, HashSet};
 
-actions!(
+gpui_kit::actions!(
     hivegui_function_form,
     [FunctionFormTab, FunctionFormTabPrev]
 );
@@ -154,12 +154,12 @@ fn function_semantic_element(semantic: FunctionSemanticStatus) -> Stateful<Div> 
 #[doc(hidden)]
 pub fn function_semantic_accesskit_probe(
     semantic: FunctionSemanticStatus,
-) -> gpui::accesskit::Node {
+) -> gpui_kit::accesskit::Node {
     let element = function_semantic_element(semantic);
     let role = element
         .a11y_role()
         .expect("Function semantic elements always expose an AccessKit role");
-    let mut node = gpui::accesskit::Node::new(role);
+    let mut node = gpui_kit::accesskit::Node::new(role);
     element.write_a11y_info(&mut node);
     node
 }
@@ -2648,7 +2648,7 @@ fn form_field(
     selector: &'static str,
     focused_selector: Option<&'static str>,
     value_selector: Option<String>,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
 ) -> impl IntoElement {
     let debug_selector = selector.to_string();
     div()
@@ -2688,7 +2688,7 @@ fn form_field_multiline(
     input: Entity<TextareaState>,
     selector: &'static str,
     focused_selector: Option<&'static str>,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
 ) -> impl IntoElement {
     let debug_selector = selector.to_string();
     div()
@@ -2736,7 +2736,7 @@ fn selector_field(
     label: &'static str,
     value: impl Into<SharedString>,
     id: impl Into<ElementId>,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
     on_toggle: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> Div {
     div()
@@ -2769,7 +2769,7 @@ fn selector_field(
         )
 }
 
-fn selector_menu(theme: &gpui_component::theme::Theme) -> Scrollable<Div> {
+fn selector_menu(theme: &gpui_kit::component::theme::Theme) -> Scrollable<Div> {
     div()
         .flex()
         .flex_col()
@@ -2786,7 +2786,7 @@ fn selector_option(
     id: impl Into<ElementId>,
     label: impl Into<SharedString>,
     selected: bool,
-    theme: &gpui_component::theme::Theme,
+    theme: &gpui_kit::component::theme::Theme,
     on_select: impl Fn(&MouseDownEvent, &mut Window, &mut App) + 'static,
 ) -> Stateful<Div> {
     let list_hover = theme.list_hover;

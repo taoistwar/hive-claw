@@ -72,6 +72,7 @@ aho-corasick = { workspace = true }
 once_cell = { workspace = true }
 async-trait = { workspace = true }
 sha2 = { workspace = true }
+hex = "0.4"
 futures = { workspace = true }
 bytes = { workspace = true }
 toml = "0.8"

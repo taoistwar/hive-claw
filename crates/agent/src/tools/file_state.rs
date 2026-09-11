@@ -57,7 +57,7 @@ impl FileStates {
         let bytes = fs::read(path).ok()?;
         let mut hasher = Sha256::new();
         hasher.update(&bytes);
-        Some(format!("{:x}", hasher.finalize()))
+        Some(hex::encode(hasher.finalize()))
     }
 
     /// Record that a file was read (called after successful read).

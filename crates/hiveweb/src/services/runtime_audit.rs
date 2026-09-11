@@ -1174,7 +1174,7 @@ pub fn log_field_count(fields: Option<&Value>) -> usize {
 }
 
 fn fingerprint(value: &str) -> String {
-    let digest = format!("{:x}", Sha256::digest(value.as_bytes()));
+    let digest = hex::encode(Sha256::digest(value.as_bytes()));
     digest[..16].to_string()
 }
 

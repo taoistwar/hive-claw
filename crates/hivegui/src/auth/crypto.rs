@@ -146,7 +146,7 @@ pub fn wrap_kek_verifier(kek: &Secret32) -> Result<Vec<u8>, CryptoError> {
     let mut nonce = [0u8; 12];
     OsRng.fill_bytes(&mut nonce);
     let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce), &KEK_VERIFIER_PLAINTEXT[..])
+        .encrypt(&Nonce::from(nonce), &KEK_VERIFIER_PLAINTEXT[..])
         .map_err(|err| CryptoError::AeadFailed(err.to_string()))?;
     let mut out = Vec::with_capacity(12 + ciphertext.len());
     out.extend_from_slice(&nonce);
@@ -164,8 +164,10 @@ pub fn unwrap_kek_verifier(kek: &Secret32, blob: &[u8]) -> Result<(), CryptoErro
     }
     let (nonce, ciphertext) = blob.split_at(12);
     let cipher = ChaCha20Poly1305::new(kek.as_bytes().into());
+    let nonce = Nonce::try_from(nonce)
+        .map_err(|_| CryptoError::InvalidLayout("kek_verifier nonce too short".into()))?;
     let _plaintext = cipher
-        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|_| CryptoError::KekVerifierMismatch)?;
     Ok(())
 }
@@ -177,7 +179,7 @@ pub fn wrap_with_kek(kek: &Secret32, plaintext: &Secret32) -> Result<Vec<u8>, Cr
     let mut nonce = [0u8; 12];
     OsRng.fill_bytes(&mut nonce);
     let ciphertext = cipher
-        .encrypt(Nonce::from_slice(&nonce), plaintext.as_bytes().as_slice())
+        .encrypt(&Nonce::from(nonce), plaintext.as_bytes().as_slice())
         .map_err(|err| CryptoError::AeadFailed(err.to_string()))?;
     let mut out = Vec::with_capacity(12 + ciphertext.len());
     out.extend_from_slice(&nonce);
@@ -195,8 +197,10 @@ pub fn unwrap_with_kek(kek: &Secret32, blob: &[u8]) -> Result<Secret32, CryptoEr
     }
     let (nonce, ciphertext) = blob.split_at(12);
     let cipher = ChaCha20Poly1305::new(kek.as_bytes().into());
+    let nonce = Nonce::try_from(nonce)
+        .map_err(|_| CryptoError::InvalidLayout("wrap blob nonce too short".into()))?;
     let plaintext = cipher
-        .decrypt(Nonce::from_slice(nonce), ciphertext)
+        .decrypt(&nonce, ciphertext)
         .map_err(|_| CryptoError::KekVerifierMismatch)?;
     if plaintext.len() != 32 {
         return Err(CryptoError::InvalidLayout(format!(

@@ -31,7 +31,7 @@ async fn t167_tampered_wasm_is_rejected_by_real_invoker_without_pooling_instance
     let s3 = hiveweb::storage::s3::create_client().await?;
     let identifier = format!("t167-{}", uuid::Uuid::new_v4().simple());
     let s3_key = format!("plugins/{identifier}/1.0.0.wasm");
-    let expected_sha256 = format!("{:x}", Sha256::digest(SHARED_SMOKE_WASM));
+    let expected_sha256 = hex::encode(Sha256::digest(SHARED_SMOKE_WASM));
 
     let upload = hiveweb::services::plugin::upload(
         &db_pool,
@@ -102,7 +102,7 @@ async fn t167_tampered_wasm_is_rejected_by_real_invoker_without_pooling_instance
             .ok_or_else(|| anyhow::anyhow!("uploaded WASM object must not be empty"))?;
         *last ^= 0x01;
         anyhow::ensure!(
-            format!("{:x}", Sha256::digest(&tampered)) != stored_sha256,
+            hex::encode(Sha256::digest(&tampered)) != stored_sha256,
             "tampering must change the object digest"
         );
         hiveweb::storage::s3::put_wasm(&s3, &plugin.s3_key, tampered).await?;

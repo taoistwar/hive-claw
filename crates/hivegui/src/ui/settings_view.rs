@@ -8,10 +8,10 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use gpui::*;
-use gpui_component::ActiveTheme as _;
-use gpui_component::input::{Input, InputEvent, InputState};
-use gpui_component::scroll::ScrollableElement;
+use gpui_kit::component::ActiveTheme as _;
+use gpui_kit::component::input::{Input, InputEvent, InputState};
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::*;
 use sqlx::query_scalar;
 
 use crate::datasource::Store;
@@ -22,7 +22,7 @@ use crate::datasource::conversation_store::ConversationStore;
 use crate::runtime::diagnostics::{DiagnosticBundle, ExecutionEventCollector, RedactionConfig};
 const RETENTION_KEY: &str = "conversation_retention_days";
 
-actions!(hivegui_settings, [SettingsEscape]);
+gpui_kit::actions!(hivegui_settings, [SettingsEscape]);
 
 #[cfg(test)]
 struct RestorePreviewDeliveryInterlock {
@@ -1268,11 +1268,11 @@ mod tests {
         time::Duration,
     };
 
-    use gpui::{
+    use gpui_kit::component::input::InputEvent;
+    use gpui_kit::{
         Context, IntoElement, Render, TestAppContext, VisualTestContext, Window, div, prelude::*,
         px, size,
     };
-    use gpui_component::input::InputEvent;
     use sha2::{Digest as _, Sha256};
 
     use super::SettingsView;
@@ -2038,7 +2038,7 @@ mod tests {
         restored_name: &str,
         current_name: &str,
         passphrase: &str,
-    ) -> (Store, gpui::Entity<SettingsView>) {
+    ) -> (Store, gpui_kit::Entity<SettingsView>) {
         export_settings_data_source_archive(
             runtime,
             source_root,
@@ -2072,7 +2072,7 @@ mod tests {
     fn wait_for_settings_restore_ready(
         cx: &mut TestAppContext,
         runtime: &tokio::runtime::Runtime,
-        view: &gpui::Entity<SettingsView>,
+        view: &gpui_kit::Entity<SettingsView>,
     ) {
         cx.dispatcher.allow_parking();
         {
@@ -2108,7 +2108,7 @@ mod tests {
     fn run_settings_restore_confirmation(
         cx: &mut TestAppContext,
         runtime: &tokio::runtime::Runtime,
-        view: &gpui::Entity<SettingsView>,
+        view: &gpui_kit::Entity<SettingsView>,
         live_store: &Store,
     ) -> String {
         {
@@ -2215,11 +2215,11 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn settings_content_is_constrained_to_the_available_height(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let window = cx.open_window(size(px(800.0), px(520.0)), |_, _| SettingsLayoutTestView);
         cx.run_until_parked();
@@ -2232,13 +2232,13 @@ mod tests {
         assert_eq!(bounds.bottom(), px(520.0));
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn production_export_freezes_the_live_store_and_reports_restart_requirement(
         cx: &mut TestAppContext,
     ) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let temp_dir = tempfile::tempdir().expect("create Settings backup fixture");
         let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
@@ -2309,15 +2309,15 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn production_restore_preview_and_confirmation_use_the_store_bound_coordinator(
         cx: &mut TestAppContext,
     ) {
         const PASSPHRASE: &str = "T130-settings-store-bound-restore-passphrase";
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let temp_dir = tempfile::tempdir().expect("create Settings restore fixture");
         let source_root = temp_dir.path().join("archive-source");
@@ -2625,15 +2625,15 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn changing_restore_input_cancels_the_exact_preview_before_a_second_preview(
         cx: &mut TestAppContext,
     ) {
         const PASSPHRASE: &str = "T130-settings-preview-lifecycle-passphrase";
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let temp_dir = tempfile::tempdir().expect("create Settings lifecycle fixture");
         let source_a = temp_dir.path().join("archive-source-a");
@@ -2967,14 +2967,14 @@ mod tests {
             .expect("passphrase cancellation must leave current Store writable");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn restore_preview_cancel_failure_enters_restart_only_terminal_state(cx: &mut TestAppContext) {
         const PASSPHRASE: &str = "T130-settings-cancel-failure-passphrase-secret";
         const STAGING_CANARY: &[u8] = b"T130-settings-cancel-failure-staging-canary-secret";
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let temp_dir = tempfile::tempdir().expect("create Settings cancel-failure fixture");
         let source_root = temp_dir.path().join("cancel-failure-source");
@@ -3297,15 +3297,15 @@ mod tests {
         drop(cancel_runtime_guard);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn stale_preview_outcome_is_cancelled_after_path_change_before_delivery(
         cx: &mut TestAppContext,
     ) {
         const PASSPHRASE: &str = "T130-settings-stale-preview-passphrase";
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let temp_dir = tempfile::tempdir().expect("create stale-preview fixture");
         let source_a = temp_dir.path().join("stale-source-a");
@@ -3561,15 +3561,15 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn repeating_a_ready_preview_is_rejected_without_replacing_its_exact_pair(
         cx: &mut TestAppContext,
     ) {
         const PASSPHRASE: &str = "T130-settings-ready-repeat-passphrase";
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let temp_dir = tempfile::tempdir().expect("create Ready-repeat fixture");
         let source_root = temp_dir.path().join("ready-repeat-source");
@@ -3766,15 +3766,15 @@ mod tests {
         drop(unused_release);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn archive_replacement_before_confirmation_cancels_ready_preview_without_freezing_store(
         cx: &mut TestAppContext,
     ) {
         const PASSPHRASE: &str = "T130-settings-confirm-preflight-passphrase";
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let temp_dir = tempfile::tempdir().expect("create confirmation-preflight fixture");
         let source_a_root = temp_dir.path().join("confirm-preflight-source-a");
@@ -4064,7 +4064,7 @@ mod tests {
         assert!(!live_store.pool().is_closed());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn post_cas_pre_freeze_confirmation_failure_enters_fail_closed_restart_terminal(
         cx: &mut TestAppContext,
     ) {
@@ -4073,8 +4073,8 @@ mod tests {
             "恢复确认未能安全完成；Store 已进入保护状态，必须重启 HiveGUI 进行恢复校验";
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let temp_dir = tempfile::tempdir().expect("create post-CAS terminal fixture");
         let source_root = temp_dir.path().join("post-cas-terminal-source");
@@ -4349,15 +4349,15 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn consecutive_restore_input_changes_cancel_one_ready_preview_exactly_once(
         cx: &mut TestAppContext,
     ) {
         const PASSPHRASE: &str = "T130-settings-consecutive-input-cancel-passphrase";
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let temp_dir = tempfile::tempdir().expect("create consecutive input-change fixture");
         let source_root = temp_dir.path().join("consecutive-input-source");
@@ -4658,7 +4658,7 @@ mod tests {
         assert!(!safety_snapshot.exists());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn late_cancel_success_cannot_clear_an_exact_pair_cancel_error_terminal(
         cx: &mut TestAppContext,
     ) {
@@ -4666,8 +4666,8 @@ mod tests {
         const TERMINAL_STATUS: &str = "恢复预检清理未能安全完成；Store 已锁定，必须重启 HiveGUI";
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let temp_dir = tempfile::tempdir().expect("create cancel callback-order fixture");
         let source_root = temp_dir.path().join("cancel-callback-source");
@@ -4930,15 +4930,15 @@ mod tests {
         assert_eq!(prepared.db_instance_operation_id(), operation_id);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn set_store_rejects_cross_root_rebind_while_a_preview_outcome_is_in_flight(
         cx: &mut TestAppContext,
     ) {
         const PASSPHRASE: &str = "T130-settings-in-flight-store-rebind-passphrase";
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let temp_dir = tempfile::tempdir().expect("create in-flight Store-rebind fixture");
         let source_root = temp_dir.path().join("in-flight-rebind-source");
@@ -5174,11 +5174,11 @@ mod tests {
         write_a.expect("rejected cross-root rebind must leave root A writable after cancellation");
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn set_store_is_a_one_time_binding_even_while_restore_is_idle(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let temp_dir = tempfile::tempdir().expect("create idle Store-binding fixture");
         let root_a = temp_dir.path().join("idle-store-root-a");
@@ -5268,13 +5268,13 @@ mod tests {
         assert!(settings_restore_live_instances(&root_b).is_empty());
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn set_store_rejects_cross_root_rebind_after_confirmation_terminal(cx: &mut TestAppContext) {
         const PASSPHRASE: &str = "T130-settings-terminal-store-rebind-passphrase";
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let temp_dir = tempfile::tempdir().expect("create terminal Store-rebind fixture");
         let source_root = temp_dir.path().join("terminal-rebind-source");
@@ -5489,7 +5489,7 @@ mod tests {
         assert_restore_confirmation_safety_phase_source_contract();
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn production_restore_pre_safety_failure_reports_not_verified_without_error_text_guessing(
         cx: &mut TestAppContext,
     ) {
@@ -5497,8 +5497,8 @@ mod tests {
         const CORRUPT_STAGING: &[u8] = b"not-a-sqlite-database-pre-safety-sensitive-canary";
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let temp_dir = tempfile::tempdir().expect("create pre-safety Settings fixture");
         let source_root = temp_dir.path().join("pre-safety-source");
@@ -5617,15 +5617,15 @@ mod tests {
         assert_eq!(status, RESTORE_PRE_SAFETY_FAILURE_STATUS);
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn production_restore_post_safety_failure_reports_verified_snapshot_without_error_text_guessing(
         cx: &mut TestAppContext,
     ) {
         const PASSPHRASE: &str = "T130-settings-post-safety-phase-passphrase";
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let temp_dir = tempfile::tempdir().expect("create post-safety Settings fixture");
         let source_root = temp_dir.path().join("post-safety-source");

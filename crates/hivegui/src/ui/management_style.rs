@@ -1,6 +1,6 @@
-use gpui::*;
-use gpui_component::scroll::ScrollableElement;
-use gpui_component::{ActiveTheme as _, theme::Theme};
+use gpui_kit::component::scroll::ScrollableElement;
+use gpui_kit::component::{ActiveTheme as _, theme::Theme};
+use gpui_kit::*;
 
 /// Semantic purpose of an action in a management surface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,11 +312,11 @@ mod tests {
         ActionColors, ActionRole, ActionSize, ListColors, ManagementStyle, action_button,
         list_actions, list_cell, list_container, list_header, list_header_cell, list_row,
     };
-    use gpui::{
+    use gpui_kit::component::theme::Theme;
+    use gpui_kit::{
         Context, Hsla, IntoElement, Render, TestAppContext, VisualTestContext, Window, hsla,
         prelude::*, px, size,
     };
-    use gpui_component::theme::Theme;
 
     fn color(hue: f32) -> Hsla {
         hsla(hue, 0.7, 0.5, 1.0)
@@ -555,13 +555,13 @@ mod tests {
         );
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn management_style_recomputes_after_theme_mode_changes(cx: &mut TestAppContext) {
-        use gpui_component::{ThemeMode, theme::Theme};
+        use gpui_kit::component::{ThemeMode, theme::Theme};
 
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let (light, dark) = cx.update(|cx| {
             Theme::change(ThemeMode::Light, None, cx);
@@ -625,11 +625,11 @@ mod tests {
         }
     }
 
-    #[gpui::test]
+    #[gpui_kit::test]
     fn shared_list_primitives_align_header_row_and_action(cx: &mut TestAppContext) {
         cx.update(|cx| {
-            gpui_component::theme::init(cx);
-            gpui_component::init(cx);
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
         });
         let window = cx.open_window(size(px(480.0), px(160.0)), |_, _| ListFixture);
         cx.run_until_parked();

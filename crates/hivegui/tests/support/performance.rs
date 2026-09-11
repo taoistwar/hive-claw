@@ -933,8 +933,8 @@ pub fn source_revision(repository: &Path) -> Result<String, SourceRevisionError>
     }
 
     Ok(format!(
-        "git:{head}+hivegui-source-v1:{:x}",
-        digest.finalize()
+        "git:{head}+hivegui-source-v1:{}",
+        hex::encode(digest.finalize())
     ))
 }
 

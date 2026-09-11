@@ -20,7 +20,7 @@
 //!
 //! The pool used by sqlx needs a tokio runtime, so the assertions
 //! below use `#[tokio::test(flavor = "current_thread")]` rather
-//! than `#[gpui::test]`. The `LlmProviderStore` public boundary
+//! than `#[gpui_kit::test]`. The `LlmProviderStore` public boundary
 //! itself is async; callers do not need to be on a tokio runtime
 //! to drive it.
 

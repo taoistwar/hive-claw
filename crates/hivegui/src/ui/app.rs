@@ -17,9 +17,10 @@ use crate::datasource::llm_store::LlmStore;
 use crate::runtime::diagnostics::ExecutionEventCollector;
 use crate::runtime::{FoundationRuntimeComposition, LocalExecutionAdapter};
 use crate::ui::{
-    ai_view::AiView, category_view::CategoryView, global_config::GlobalConfigView,
-    home::HomeView, llm_config::LLMConfigView, prompt_debugger::PromptDebugger,
-    sidebar_nav::SidebarNav, theme_contrast, utility_view::UtilityView,
+    ai_view::AiView, category_view::CategoryView, function_view::FunctionView,
+    global_config::GlobalConfigView, home::HomeView, llm_config::LLMConfigView,
+    prompt_debugger::PromptDebugger, sidebar_nav::SidebarNav, theme_contrast,
+    utility_view::UtilityView,
 };
 
 /// Error returned when navigation cannot proceed.
@@ -411,6 +412,12 @@ const PROMPT_STUDIO_SECTIONS: &[PromptStudioSection] = &[
         label: "LLM 配置",
         icon: IconName::BrainCircuit,
     },
+    // 函数管理紧挨提示词调试：本页「从函数管理选择工具」直接读取这里的函数。
+    PromptStudioSection {
+        id: "functions",
+        label: "函数管理",
+        icon: IconName::SquareFunction,
+    },
     PromptStudioSection {
         id: "category",
         label: "分类管理",
@@ -425,11 +432,12 @@ const PROMPT_STUDIO_SECTIONS: &[PromptStudioSection] = &[
 ];
 
 /// Focused prompt-engineering application: LLM prompt debugger, LLM config
-/// (Model / Preset / Provider), global configuration, and category management.
+/// (Model / Preset / Provider), function management, global configuration, and
+/// category management.
 ///
 /// It reuses the same Store / LlmStore bootstrap as [`run`] but wires a
 /// narrower shell so the prompt-engineering surfaces are the only navigation
-/// targets. The four views do not depend on `HiveGuiAppState`, so no
+/// targets. The five views do not depend on `HiveGuiAppState`, so no
 /// desktop-wide global is installed here.
 ///
 /// Unlike [`run`], the prompt studio opens its **own** data root
@@ -491,6 +499,7 @@ pub struct PromptStudioRoot {
     active: usize,
     prompt_debugger: Entity<PromptDebugger>,
     llm_config: Entity<LLMConfigView>,
+    function_view: Entity<FunctionView>,
     global_config: Entity<GlobalConfigView>,
     category_view: Entity<CategoryView>,
     /// `on_window_should_close` 是否已经挂到本窗口上（只需挂一次）。
@@ -523,11 +532,13 @@ impl PromptStudioRoot {
             view.identity = AppIdentity::NGY_PROMPT_STUDIO;
             view
         });
+        let function_view = cx.new(|cx| FunctionView::new(store.clone(), cx));
         let category_view = cx.new(|cx| CategoryView::new(store.clone(), cx));
         Self {
             active: 0,
             prompt_debugger,
             llm_config,
+            function_view,
             global_config,
             category_view,
             window_close_hook_registered: false,
@@ -642,6 +653,7 @@ impl Render for PromptStudioRoot {
         let body = match PROMPT_STUDIO_SECTIONS[self.active].id {
             "prompt" => self.prompt_debugger.clone().into_any_element(),
             "llm" => self.llm_config.clone().into_any_element(),
+            "functions" => self.function_view.clone().into_any_element(),
             "global" => self.global_config.clone().into_any_element(),
             "category" => self.category_view.clone().into_any_element(),
             _ => div().into_any_element(),
@@ -1015,9 +1027,32 @@ mod tests {
     };
 
     use super::{
-        WINDOW_CONTROL_CLOSE, WINDOW_CONTROL_MAXIMIZE, WINDOW_CONTROL_MINIMIZE, shell_layout,
-        shell_theme_colors, window_control_buttons,
+        PROMPT_STUDIO_SECTIONS, WINDOW_CONTROL_CLOSE, WINDOW_CONTROL_MAXIMIZE,
+        WINDOW_CONTROL_MINIMIZE, shell_layout, shell_theme_colors, window_control_buttons,
     };
+
+    /// PRD「提示词工程 · 函数管理 · 左侧菜单要添加函数管理」：Ngy Prompt
+    /// Studio 的图标栏必须提供「函数管理」分区，并保持与正文分派一致的顺序。
+    #[test]
+    fn prompt_studio_rail_lists_function_management() {
+        let ids = PROMPT_STUDIO_SECTIONS
+            .iter()
+            .map(|section| section.id)
+            .collect::<Vec<_>>();
+        assert_eq!(ids, ["prompt", "llm", "functions", "category", "global"]);
+        assert!(
+            PROMPT_STUDIO_SECTIONS
+                .iter()
+                .any(|section| section.id == "functions" && section.label == "函数管理"),
+            "左侧菜单必须包含「函数管理」分区"
+        );
+
+        // 正文按 id 分派，重复 id 会让某个分区永远打不开。
+        let mut unique = ids.clone();
+        unique.sort_unstable();
+        unique.dedup();
+        assert_eq!(unique.len(), ids.len(), "分区 id 必须唯一");
+    }
 
     struct ShellLayoutTestView;
 

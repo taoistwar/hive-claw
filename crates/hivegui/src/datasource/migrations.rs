@@ -2612,6 +2612,7 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
             is_default INTEGER NOT NULL DEFAULT 0, \
             max_tokens INTEGER NOT NULL DEFAULT 2048, \
             temperature REAL NOT NULL DEFAULT 0.7, \
+            reasoning_effort TEXT, \
             created_at TEXT NOT NULL DEFAULT '', \
             updated_at TEXT NOT NULL DEFAULT ''\
         )",
@@ -2619,6 +2620,27 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     .execute(&mut **executor)
     .await
     .context("create llm_presets table")?;
+
+    // Defensive ALTER for `llm_presets.reasoning_effort`. Fresh installs hit
+    // the CREATE TABLE above with the column present; this branch only runs
+    // for pre-existing databases written before the column landed (SQLite has
+    // no `ADD COLUMN IF NOT EXISTS`). The LLM store repeats the same probe on
+    // its own init path because v4 databases never re-enter this migration.
+    // query-plan: id=t012.llm_presets.reasoning_effort_probe; owner_phase=US4; activation_task=T050
+    let llm_presets_columns = sqlx::query("SELECT name FROM pragma_table_info('llm_presets')")
+        .fetch_all(&mut **executor)
+        .await
+        .context("pragma_table_info(llm_presets)")?;
+    let llm_presets_column_names: std::collections::HashSet<String> = llm_presets_columns
+        .iter()
+        .map(|row| row.try_get::<String, _>("name").unwrap_or_default())
+        .collect();
+    if !llm_presets_column_names.contains("reasoning_effort") {
+        sqlx::query("ALTER TABLE llm_presets ADD COLUMN reasoning_effort TEXT")
+            .execute(&mut **executor)
+            .await
+            .context("add llm_presets.reasoning_effort")?;
+    }
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS models (\

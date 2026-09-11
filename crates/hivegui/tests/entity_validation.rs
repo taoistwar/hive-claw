@@ -49,6 +49,7 @@ const ENTITY_FIELDS: &[EntityFields] = &[
             "is_default",
             "max_tokens",
             "temperature",
+            "reasoning_effort",
         ],
     },
     EntityFields {

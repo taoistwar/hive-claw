@@ -3846,7 +3846,7 @@ fn agent_workflow_backup_combined_load_keeps_keyboard_focus_and_stop_responsive(
             .await
             .expect("create T121 local Provider");
         let preset = llm_store
-            .create_preset("t121-local-preset", "", false, 256, 0.0)
+            .create_preset("t121-local-preset", "", false, 256, 0.0, None)
             .await
             .expect("create T121 local Preset");
         llm_store

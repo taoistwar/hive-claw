@@ -425,7 +425,7 @@ async fn t052_red_preset_priority_builds_workspace_fallback_and_emits_runtime_ev
         .await
         .expect("primary provider");
     let preset = store
-        .create_preset("t052-priority", "", false, 321, 0.25)
+        .create_preset("t052-priority", "", false, 321, 0.25, None)
         .await
         .expect("preset");
     store
@@ -587,7 +587,7 @@ async fn t052_red_midflight_cancel_drops_http_without_fallback_or_late_token() {
         .await
         .expect("fallback provider");
     let preset = store
-        .create_preset("t052-cancel", "", false, 128, 0.0)
+        .create_preset("t052-cancel", "", false, 128, 0.0, None)
         .await
         .expect("preset");
     store

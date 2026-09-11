@@ -760,6 +760,12 @@ impl ProviderResolver {
         chat_request.model = Some(rows[0].model_name.clone());
         chat_request.max_tokens = rows[0].max_tokens.max(1) as u32;
         chat_request.temperature = rows[0].temperature as f32;
+        // The preset tier owns extended-thinking behaviour when it declares
+        // one; a tier without `reasoning_effort` leaves the caller's value
+        // (normally `None`) untouched.
+        if let Some(effort) = rows[0].reasoning_effort.as_deref() {
+            chat_request.reasoning_effort = Some(effort.to_string());
+        }
 
         let started = Instant::now();
         if request.cancel_now || context.is_cancelled() {
@@ -828,6 +834,8 @@ struct LocalProviderRow {
     token_env: String,
     max_tokens: i32,
     temperature: f64,
+    /// Preset tier's reasoning effort; `None` keeps the caller's value.
+    reasoning_effort: Option<String>,
 }
 
 async fn load_local_chain(
@@ -837,7 +845,7 @@ async fn load_local_chain(
     let rows = sqlx::query_as::<_, LocalProviderRow>(
         "SELECT m.name AS model_name, p.name AS provider_name, \
                 p.category AS provider_category, p.base_url, p.token_encrypted, p.token_env, \
-                preset.max_tokens, preset.temperature \
+                preset.max_tokens, preset.temperature, preset.reasoning_effort \
          FROM llm_presets preset \
          JOIN models m ON m.preset_id = preset.id \
          JOIN llm_providers p ON p.id = m.provider_id \

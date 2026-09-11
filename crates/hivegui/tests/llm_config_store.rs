@@ -311,7 +311,7 @@ async fn preset_is_independent_and_model_links_provider_and_preset() {
         .await
         .expect("provider");
     let preset = store
-        .create_preset("coding-tier", "coding models", false, 4096, 0.2)
+        .create_preset("coding-tier", "coding models", false, 4096, 0.2, None)
         .await
         .expect("preset");
     let model = store
@@ -324,7 +324,119 @@ async fn preset_is_independent_and_model_links_provider_and_preset() {
     assert_eq!(model.priority, 5);
     // Provider 独立：不持有 preset/model 引用字段。
     assert_eq!(store.list_providers().await.expect("providers").len(), 1);
-    // Preset 独立：seed 2 + 新建 1 = 3。
+    // Preset 独立：seed 3（fast/balanced/max）+ 新建 1 = 4。
+    assert_eq!(store.list_presets().await.expect("presets").len(), 4);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn builtin_presets_are_the_three_tiers_in_seed_order() {
+    let workspace = TestWorkspace::new().expect("test workspace");
+    let (store, _pool) = migrated_llm_store(&workspace).await;
+
+    let presets = store.list_presets().await.expect("presets");
+    let tiers: Vec<(&str, Option<&str>)> = presets
+        .iter()
+        .map(|preset| (preset.name.as_str(), preset.reasoning_effort.as_deref()))
+        .collect();
+    assert_eq!(
+        tiers,
+        vec![("fast", None), ("balanced", None), ("max", Some("high"))],
+        "内置档位必须是 fast / balanced / max，且只有 max 请求扩展思考"
+    );
+    let defaults: Vec<_> = presets.iter().filter(|p| p.is_default == 1).collect();
+    assert_eq!(defaults.len(), 1, "exactly one default preset");
+    assert_eq!(defaults[0].name, "balanced", "默认档位是均衡");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn legacy_builtin_presets_are_normalized_to_the_three_tiers() {
+    let workspace = TestWorkspace::new().expect("test workspace");
+    workspace
+        .ensure_fixture_device_key()
+        .expect("device key fixture");
+    migrate_to_current(MigrationOptions::new(
+        workspace.database_path(),
+        workspace.plugin_root(),
+    ))
+    .await
+    .expect("migrate to current");
+    let pool = workspace.sqlite_pool().await.expect("sqlite pool");
+
+    // 旧版内置档位（cheap-fast / code-expert）与引用它们的 Agent。
+    for (name, desc, is_default, max_tokens, temperature) in [
+        (
+            "cheap-fast",
+            "GPT-4o-mini primary, Claude Haiku fallback",
+            1,
+            2048,
+            0.7,
+        ),
+        (
+            "code-expert",
+            "Claude Opus primary, GPT-4o fallback",
+            0,
+            4096,
+            0.3,
+        ),
+    ] {
+        sqlx::query(
+            "INSERT INTO llm_presets \
+             (name, description, is_default, max_tokens, temperature, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?, '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')",
+        )
+        .bind(name)
+        .bind(desc)
+        .bind(is_default)
+        .bind(max_tokens)
+        .bind(temperature)
+        .execute(&pool)
+        .await
+        .expect("seed legacy preset");
+    }
+    insert_agent(&pool, "legacy-fast-agent", "cheap-fast").await;
+    insert_agent(&pool, "legacy-expert-agent", "code-expert").await;
+
+    let store = LlmStore::new(pool.clone(), Crypto::new(&fixture_key(&workspace)));
+    store.migrate().await.expect("migrate llm tables");
+
+    let presets = store.list_presets().await.expect("presets");
+    let tiers: Vec<(&str, Option<&str>)> = presets
+        .iter()
+        .map(|preset| (preset.name.as_str(), preset.reasoning_effort.as_deref()))
+        .collect();
+    assert!(tiers.contains(&("fast", None)), "tiers: {tiers:?}");
+    assert!(tiers.contains(&("balanced", None)), "tiers: {tiers:?}");
+    assert!(tiers.contains(&("max", Some("high"))), "tiers: {tiers:?}");
+    assert!(
+        !tiers
+            .iter()
+            .any(|(name, _)| *name == "cheap-fast" || *name == "code-expert"),
+        "旧内置名不得保留（不引入别名）: {tiers:?}"
+    );
+    // 已有档位的 max_tokens / temperature 是用户可能已调过的值，迁移不改写。
+    let fast = presets.iter().find(|p| p.name == "fast").expect("fast");
+    assert_eq!((fast.max_tokens, fast.temperature), (2048, 0.7));
+    let max = presets.iter().find(|p| p.name == "max").expect("max");
+    assert_eq!((max.max_tokens, max.temperature), (4096, 0.3));
+    // 默认档位交给新的 balanced（被重命名过来的 fast 不再占着默认）。
+    let defaults: Vec<_> = presets.iter().filter(|p| p.is_default == 1).collect();
+    assert_eq!(defaults.len(), 1, "exactly one default preset");
+    assert_eq!(defaults[0].name, "balanced");
+    // Agent 引用在同一事务内原子跟随改名。
+    for (identifier, expected) in [
+        ("legacy-fast-agent", "fast"),
+        ("legacy-expert-agent", "max"),
+    ] {
+        let model_preset: String =
+            sqlx::query_scalar("SELECT model_preset FROM agents WHERE identifier = ?")
+                .bind(identifier)
+                .fetch_one(&pool)
+                .await
+                .expect("agent model_preset");
+        assert_eq!(model_preset, expected);
+    }
+    // 幂等：再次 migrate 不重复插入档位、不改名。
+    store.migrate().await.expect("migrate again");
     assert_eq!(store.list_presets().await.expect("presets").len(), 3);
 }
 
@@ -333,9 +445,9 @@ async fn only_one_default_preset_survives_atomic_switch() {
     let workspace = TestWorkspace::new().expect("test workspace");
     let (store, _pool) = migrated_llm_store(&workspace).await;
 
-    // seed 已含 is_default=true 的 cheap-fast；再设一个默认应原子切换。
+    // seed 已含 is_default=true 的 balanced；再设一个默认应原子切换。
     let preset = store
-        .create_preset("expert-tier", "expert", true, 8192, 0.1)
+        .create_preset("expert-tier", "expert", true, 8192, 0.1, None)
         .await
         .expect("preset");
 
@@ -351,13 +463,13 @@ async fn preset_rename_atomically_updates_referencing_agents() {
     let (store, pool) = migrated_llm_store(&workspace).await;
 
     let preset = store
-        .create_preset("legacy-tier", "legacy", false, 2048, 0.7)
+        .create_preset("legacy-tier", "legacy", false, 2048, 0.7, None)
         .await
         .expect("preset");
     insert_agent(&pool, "agent-1", "legacy-tier").await;
 
     let updated = store
-        .update_preset(preset.id, "renamed-tier", "legacy", false, 2048, 0.7)
+        .update_preset(preset.id, "renamed-tier", "legacy", false, 2048, 0.7, None)
         .await
         .expect("update preset");
     assert!(updated);
@@ -376,7 +488,7 @@ async fn deleting_referenced_preset_returns_conflict_with_safe_reference_list() 
     let (store, pool) = migrated_llm_store(&workspace).await;
 
     let preset = store
-        .create_preset("used-tier", "used", false, 2048, 0.7)
+        .create_preset("used-tier", "used", false, 2048, 0.7, None)
         .await
         .expect("preset");
     insert_agent(&pool, "agent-1", "used-tier").await;
@@ -398,7 +510,7 @@ async fn deleting_referenced_preset_returns_conflict_with_safe_reference_list() 
             .await
             .expect("count agents");
     assert_eq!(remaining, 2);
-    assert_eq!(store.list_presets().await.expect("presets").len(), 3);
+    assert_eq!(store.list_presets().await.expect("presets").len(), 4);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -417,7 +529,7 @@ async fn deleting_preset_cascades_to_its_models() {
         .await
         .expect("provider");
     let preset = store
-        .create_preset("temp-tier", "temp", false, 2048, 0.7)
+        .create_preset("temp-tier", "temp", false, 2048, 0.7, None)
         .await
         .expect("preset");
     store

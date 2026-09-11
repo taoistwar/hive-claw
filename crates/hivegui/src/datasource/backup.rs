@@ -706,6 +706,7 @@ fn entity_columns(table: &str) -> &'static [&'static str] {
             "is_default",
             "max_tokens",
             "temperature",
+            "reasoning_effort",
             "created_at",
             "updated_at",
         ],
@@ -905,7 +906,7 @@ async fn fetch_entity_rows(
         "categories" => sqlx::query("SELECT id,parent_id,name,slug,description,created_at,updated_at FROM categories ORDER BY id").fetch_all(pool).await,
         "capabilities" => sqlx::query("SELECT name,description,is_dangerous,category_id,normalized_name,created_at FROM capabilities ORDER BY name").fetch_all(pool).await,
         "global_configs" => sqlx::query("SELECT id,name,key,type,data,created_at,updated_at FROM global_configs ORDER BY id").fetch_all(pool).await,
-        "llm_presets" => sqlx::query("SELECT id,name,description,is_default,max_tokens,temperature,created_at,updated_at FROM llm_presets ORDER BY id").fetch_all(pool).await,
+        "llm_presets" => sqlx::query("SELECT id,name,description,is_default,max_tokens,temperature,reasoning_effort,created_at,updated_at FROM llm_presets ORDER BY id").fetch_all(pool).await,
         "llm_providers" => sqlx::query("SELECT id,name,category,base_url,token_env,token_encrypted,created_at,updated_at FROM llm_providers ORDER BY id").fetch_all(pool).await,
         "models" => sqlx::query("SELECT id,name,preset_id,provider_id,priority,created_at,updated_at FROM models ORDER BY id").fetch_all(pool).await,
         "tags" => sqlx::query("SELECT id,name,color,normalized_name,created_at,updated_at FROM tags ORDER BY id").fetch_all(pool).await,
@@ -2375,6 +2376,17 @@ fn validate_and_upgrade_portable_entities(
     format_version: u32,
     entities: &mut [PortableEntityBody],
 ) -> Result<(), ImportError> {
+    // Transparent upgrade: archives written before `llm_presets.reasoning_effort`
+    // existed carry the older column list. Insert the missing nullable column
+    // (as `Null`) so the importer can keep requiring the exact current column
+    // set. Archives written by the current build already carry it, so the
+    // step is idempotent.
+    let presets = entities
+        .iter_mut()
+        .find(|entity| entity.entity == "llm_presets")
+        .ok_or_else(|| ImportError::InvalidManifest("llm_presets entity missing".into()))?;
+    ensure_portable_nullable_column(presets, "reasoning_effort")?;
+
     let functions = entities
         .iter_mut()
         .find(|entity| entity.entity == "functions")
@@ -2528,6 +2540,36 @@ fn portable_column_index(entity: &PortableEntityBody, column: &str) -> Result<us
         .iter()
         .position(|candidate| candidate == column)
         .ok_or_else(|| ImportError::InvalidManifest(format!("missing {}.{column}", entity.entity)))
+}
+
+/// Add a nullable portable column that older archives predate.
+///
+/// The column is inserted at the position the current `entity_columns`
+/// contract assigns to it, and every row receives an explicit
+/// [`PortableValue::Null`]. Bodies that already carry the column are left
+/// untouched, so repeated imports (and archives written by the current build)
+/// stay byte-for-byte equivalent.
+fn ensure_portable_nullable_column(
+    entity: &mut PortableEntityBody,
+    column: &str,
+) -> Result<(), ImportError> {
+    if entity.columns.iter().any(|candidate| candidate == column) {
+        return Ok(());
+    }
+    let position = entity_columns(entity.entity.as_str())
+        .iter()
+        .position(|candidate| *candidate == column)
+        .ok_or_else(|| {
+            ImportError::InvalidManifest(format!(
+                "unknown portable column {}.{column}",
+                entity.entity
+            ))
+        })?;
+    entity.columns.insert(position, column.to_string());
+    for row in &mut entity.rows {
+        row.insert(position, PortableValue::Null);
+    }
+    Ok(())
 }
 
 fn portable_text<'a>(value: &'a PortableValue, field: &str) -> Result<&'a str, ImportError> {
@@ -3036,7 +3078,7 @@ async fn execute_portable_insert(
             "INSERT INTO global_configs (id,name,key,type,data,created_at,updated_at) VALUES (?,?,?,?,?,?,?)"
         }
         "llm_presets" => {
-            "INSERT INTO llm_presets (id,name,description,is_default,max_tokens,temperature,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)"
+            "INSERT INTO llm_presets (id,name,description,is_default,max_tokens,temperature,reasoning_effort,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)"
         }
         "llm_providers" => {
             "INSERT INTO llm_providers (id,name,category,base_url,token_env,token_encrypted,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?)"

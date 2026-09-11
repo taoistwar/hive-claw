@@ -30,6 +30,7 @@ plugins/<plugin-id>/plugin.wasm
 实体集合必须完整包含 DataSource、GlobalConfig、LlmPreset、LlmProvider、Model、Tag、Category、Capability、Plugin、Function、Workflow、WorkflowNode、WorkflowEdge、Tool、Skill、Agent、AgentTool、AgentSkill、AgentCapability、ChatSession、ChatMessage 和 AgentExecution；不得因列表为空而省略实体文件或清单项。
 恢复预检必须验证每个非空 Agent.model_preset 对应一个 LlmPreset.name；悬空引用必须在构建或切换现有状态前拒绝。
 当前 format 3 的 Function.kind 只能是 `builtin|custom|placeholder`，WorkflowNode.node_type 只能是 `start_node|end_node|function_node|generate_answer_node`，Builtin identifier 只能是 `format_template|json_parse|json_stringify|text_regex_match`。整数 kind、短节点名称和点号 Builtin 均视为当前格式无效。
+`LlmPreset.reasoning_effort` 是 nullable 列：早于该列写出的 archive 缺少该列，恢复端必须在预检阶段按当前列位置补入 `null` 并保持行长度一致（幂等；当前构建写出的 archive 已含该列时为空操作），补列后仍要求精确匹配当前列清单。
 
 ## 3. 加密
 

@@ -81,7 +81,19 @@ ChatSession 1--* AgentExecution
 
 ### LlmPreset (`llm_presets`)
 
-字段：`id`, `name UNIQUE`, `description`, `is_default`, `max_tokens`, `temperature`, `created_at`, `updated_at`。最多一个 `is_default=1`，通过部分唯一索引与事务共同强制。
+字段：`id`, `name UNIQUE`, `description`, `is_default`, `max_tokens`, `temperature`, `reasoning_effort`（nullable）, `created_at`, `updated_at`。最多一个 `is_default=1`，通过部分唯一索引与事务共同强制。
+
+`name` 是稳定 identifier（`Agent.model_preset`、`generate_answer_node.node_config.model_preset`、备份清单都按它引用），因此只使用 ASCII 名称；中文只出现在 `description`。`reasoning_effort` 为空表示不向 provider 请求扩展思考，非空时为 `low` / `medium` / `high` / `adaptive` 等 provider 适配层支持的值；Preset 声明了该值时覆盖调用方传入的值，为空时保留调用方取值（通常为空）。
+
+内置档位固定三个（`is_default` 落在 `balanced`）：
+
+| name | 语义 | `max_tokens` | `temperature` | `reasoning_effort` |
+| --- | --- | --- | --- | --- |
+| `fast` | 快速：低延迟、低成本 | 2048 | 0.7 | 空 |
+| `balanced` | 均衡（默认档） | 8192 | 0.3 | 空 |
+| `max` | 极致：最强质量与深度推理 | 16384 | 0.3 | `high` |
+
+档位只表达意图与成本偏好，具体模型由用户把 Provider 下的 Model 挂到该档位（同档内按 `priority` 形成 fallback 链）决定。老版本写出的 `cheap-fast` / `code-expert` 在 LLM 表初始化路径上被一次性重命名为 `fast` / `max`（同一事务内更新全部 `agents.model_preset`），缺失的 `balanced` 被补入；目标名已被占用时跳过重命名且不引入别名。
 
 ### LlmProvider (`llm_providers`)
 

@@ -50,11 +50,16 @@ pub struct LLMConfigView {
     form_desc: SharedString,
     form_max_tokens: SharedString,
     form_temp: SharedString,
+    /// Preset tier's `reasoning_effort` (empty = do not request extended
+    /// thinking). Kept as text because the provider adapters accept
+    /// `low` / `medium` / `high` / `adaptive`.
+    form_reasoning_effort: SharedString,
     form_is_default: bool,
     name_input: Option<Entity<InputState>>,
     desc_input: Option<Entity<InputState>>,
     mt_input: Option<Entity<InputState>>,
     temp_input: Option<Entity<InputState>>,
+    re_input: Option<Entity<InputState>>,
     form_category: SharedString,
     form_base_url: SharedString,
     form_token: SharedString,
@@ -106,11 +111,13 @@ impl LLMConfigView {
             form_desc: "".into(),
             form_max_tokens: "2048".into(),
             form_temp: "0.7".into(),
+            form_reasoning_effort: "".into(),
             form_is_default: false,
             name_input: None,
             desc_input: None,
             mt_input: None,
             temp_input: None,
+            re_input: None,
             form_category: "openai".into(),
             form_base_url: "".into(),
             form_token: "".into(),
@@ -166,6 +173,7 @@ impl LLMConfigView {
         self.form_desc = "".into();
         self.form_max_tokens = "2048".into();
         self.form_temp = "0.7".into();
+        self.form_reasoning_effort = "".into();
         self.form_is_default = false;
         self.form_category = "openai".into();
         self.form_base_url = "".into();
@@ -178,6 +186,7 @@ impl LLMConfigView {
         self.desc_input = None;
         self.mt_input = None;
         self.temp_input = None;
+        self.re_input = None;
         self.base_url_input = None;
         self.token_input = None;
         self.token_env_input = None;
@@ -226,11 +235,13 @@ impl LLMConfigView {
         self.form_desc = p.description.clone().into();
         self.form_max_tokens = p.max_tokens.to_string().into();
         self.form_temp = p.temperature.to_string().into();
+        self.form_reasoning_effort = p.reasoning_effort.clone().unwrap_or_default().into();
         self.form_is_default = p.is_default != 0;
         self.name_input = None;
         self.desc_input = None;
         self.mt_input = None;
         self.temp_input = None;
+        self.re_input = None;
         cx.notify();
     }
 
@@ -359,6 +370,7 @@ impl LLMConfigView {
             let is_def = self.form_is_default;
             let mt: i32 = self.form_max_tokens.to_string().parse().unwrap_or(2048);
             let temp: f64 = self.form_temp.to_string().parse().unwrap_or(0.7);
+            let reasoning_effort = self.form_reasoning_effort.to_string();
             let preset_id = self.form_preset_id;
             let provider_id = self.form_provider_id;
             let priority: i32 = self.form_priority.to_string().parse().unwrap_or(0);
@@ -393,12 +405,13 @@ impl LLMConfigView {
                         }
                     }
                     1 => {
+                        let effort = Some(reasoning_effort.as_str());
                         if let Some(id) = edit_id {
-                            s.update_preset(id, &name, &desc, is_def, mt, temp)
+                            s.update_preset(id, &name, &desc, is_def, mt, temp, effort)
                                 .await
                                 .map(|_| ())
                         } else {
-                            s.create_preset(&name, &desc, is_def, mt, temp)
+                            s.create_preset(&name, &desc, is_def, mt, temp, effort)
                                 .await
                                 .map(|_| ())
                         }
@@ -579,6 +592,11 @@ impl Render for LLMConfigView {
                             .placeholder("temperature")
                             .default_value(self.form_temp.to_string())
                     }));
+                    self.re_input = Some(cx.new(|cx| {
+                        InputState::new(window, cx)
+                            .placeholder("reasoning_effort（留空=不请求扩展思考）")
+                            .default_value(self.form_reasoning_effort.to_string())
+                    }));
                     self.priority_input = Some(cx.new(|cx| {
                         InputState::new(window, cx)
                             .placeholder("优先级")
@@ -589,11 +607,13 @@ impl Render for LLMConfigView {
                 sync(&self.desc_input, &mut self.form_desc, cx);
                 sync(&self.mt_input, &mut self.form_max_tokens, cx);
                 sync(&self.temp_input, &mut self.form_temp, cx);
+                sync(&self.re_input, &mut self.form_reasoning_effort, cx);
                 sync(&self.priority_input, &mut self.form_priority, cx);
                 let ni = self.name_input.clone().unwrap();
                 let di = self.desc_input.clone().unwrap();
                 let mi = self.mt_input.clone().unwrap();
                 let ti = self.temp_input.clone().unwrap();
+                let ri = self.re_input.clone().unwrap();
                 let pi = self.priority_input.clone().unwrap();
                 let model_relations = if is_model {
                     div()
@@ -680,6 +700,7 @@ impl Render for LLMConfigView {
                             .when(is_preset, |d| d.child(field(di)))
                             .when(is_preset, |d| d.child(field(mi)))
                             .when(is_preset, |d| d.child(field(ti)))
+                            .when(is_preset, |d| d.child(field(ri)))
                             .when(is_preset, |d| {
                                 d.child(toggle("默认", self.form_is_default, cx.entity(), style))
                             })
@@ -1536,6 +1557,7 @@ mod tests {
                 is_default: 1,
                 max_tokens: 2048,
                 temperature: 0.7,
+                reasoning_effort: None,
                 created_at: String::new(),
                 updated_at: String::new(),
             }];
@@ -1596,6 +1618,7 @@ mod tests {
                 is_default: 1,
                 max_tokens: 2048,
                 temperature: 0.7,
+                reasoning_effort: None,
                 created_at: String::new(),
                 updated_at: String::new(),
             }];
@@ -1907,6 +1930,7 @@ fn preset_table(
         .child(list_header_cell(None, style).child("描述"))
         .child(list_header_cell(Some(px(90.0)), style).child("max_tokens"))
         .child(list_header_cell(Some(px(80.0)), style).child("temp"))
+        .child(list_header_cell(Some(px(80.0)), style).child("effort"))
         .child(list_header_cell(Some(px(50.0)), style).child("默认"))
         .child(list_header_cell(Some(px(120.0)), style).child("操作"));
 
@@ -1917,6 +1941,10 @@ fn preset_table(
         let desc = p.description.clone();
         let mt = p.max_tokens.to_string();
         let temp = p.temperature.to_string();
+        let effort = p
+            .reasoning_effort
+            .clone()
+            .unwrap_or_else(|| "-".to_string());
         let is_def = p.is_default != 0;
         let preset_to_edit = (*p).clone();
         let e1 = cx.entity();
@@ -1938,6 +1966,7 @@ fn preset_table(
             )
             .child(list_cell(Some(px(90.0)), style).child(mt.clone()))
             .child(list_cell(Some(px(80.0)), style).child(temp.clone()))
+            .child(list_cell(Some(px(80.0)), style).child(effort.clone()))
             .child(list_cell(Some(px(50.0)), style).child(if is_def { "是" } else { "否" }))
             .child(
                 list_actions(Some(px(120.0)), style)

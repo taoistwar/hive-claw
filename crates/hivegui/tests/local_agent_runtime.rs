@@ -330,7 +330,7 @@ async fn production_provider_model_drives_real_local_tool_and_final_reply() {
         .await
         .expect("provider");
     let preset = llm_store
-        .create_preset("agent-local-preset", "", false, 512, 0.0)
+        .create_preset("agent-local-preset", "", false, 512, 0.0, Some("high"))
         .await
         .expect("preset");
     llm_store
@@ -401,6 +401,10 @@ async fn production_provider_model_drives_real_local_tool_and_final_reply() {
     assert!(request_text.contains("agent_format"));
     assert!(request_text.contains("format locally"));
     assert!(
+        request_text.contains("\"reasoning_effort\":\"high\""),
+        "the Preset tier's reasoning_effort must reach the provider request: {request_text}"
+    );
+    assert!(
         !request_text.to_ascii_lowercase().contains("hiveweb"),
         "production Agent prompt must not introduce a HiveWeb route"
     );
@@ -459,7 +463,7 @@ async fn stop_cancels_the_inflight_production_provider_without_a_late_reply() {
         .await
         .expect("provider");
     let preset = llm_store
-        .create_preset("agent-cancel-preset", "", false, 512, 0.0)
+        .create_preset("agent-cancel-preset", "", false, 512, 0.0, None)
         .await
         .expect("preset");
     llm_store

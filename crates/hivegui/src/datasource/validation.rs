@@ -508,6 +508,12 @@ const WRITE_FIELD_CATALOG: &[PublicWriteFieldRow] = &[
         activation_task: "T050",
     },
     PublicWriteFieldRow {
+        entity: "llm_preset",
+        field: "reasoning_effort",
+        owner_phase: "US4",
+        activation_task: "T050",
+    },
+    PublicWriteFieldRow {
         entity: "llm_provider",
         field: "name",
         owner_phase: "US4",

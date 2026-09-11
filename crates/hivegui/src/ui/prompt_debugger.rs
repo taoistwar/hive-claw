@@ -92,6 +92,13 @@ fn tool_definition_from_function(local_id: u64, function: &DbFunction) -> ToolDe
     }
 }
 
+/// 该函数是否已经作为工具加进本页（同一个函数只能选一次）。
+///
+/// `sources` 是「工具 id → 来源函数 id」的映射，只看值即可。
+fn function_already_added(sources: &HashMap<u64, i64>, function_id: i64) -> bool {
+    sources.values().any(|added| *added == function_id)
+}
+
 /// 消息角色
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum MessageRole {
@@ -248,6 +255,11 @@ pub struct PromptDebugger {
     // 工具定义
     tools: Vec<ToolDefinition>,
     next_tool_id: u64,
+    /// 工具来源：`工具 id → 函数管理里的函数 id`。
+    ///
+    /// 只记录「从函数管理选择」加进来的工具，用于阻止同一个函数被重复添加，
+    /// 并在选择器里把已添加的函数标记出来。手动新建的工具（`add_tool`）不进这里。
+    tool_source_functions: HashMap<u64, i64>,
     // 工具编辑状态
     editing_tools: HashMap<u64, bool>,
     collapsed_tools: HashMap<u64, bool>,
@@ -402,6 +414,7 @@ impl PromptDebugger {
             next_msg_id: 3,
             tools: vec![],
             next_tool_id: 1,
+            tool_source_functions: HashMap::new(),
             editing_tools: HashMap::new(),
             collapsed_tools: HashMap::new(),
             tool_inputs: HashMap::new(),
@@ -828,7 +841,13 @@ impl PromptDebugger {
     }
 
     /// 把一个函数管理的函数作为 LLM tool 定义加入本页。
+    ///
+    /// 同一个函数只能选一次：已经加过的函数直接忽略，选择器里也会把它标出来。
+    /// 新加入的工具按「折叠」状态显示，用户需要时再展开查看/编辑。
     fn add_tool_from_function(&mut self, function_id: i64) {
+        if function_already_added(&self.tool_source_functions, function_id) {
+            return;
+        }
         let Some(function) = self
             .available_functions
             .iter()
@@ -838,14 +857,16 @@ impl PromptDebugger {
         };
         let id = self.next_tool_id;
         self.next_tool_id += 1;
-        self.tools
-            .push(tool_definition_from_function(id, function));
-        // 新工具直接进入编辑模式
-        self.editing_tools.insert(id, true);
+        self.tools.push(tool_definition_from_function(id, function));
+        self.tool_source_functions.insert(id, function_id);
+        // 新增的工具默认折叠展示，避免一屏展开多张表单。
+        self.editing_tools.remove(&id);
+        self.collapsed_tools.insert(id, true);
     }
 
     fn remove_tool(&mut self, id: u64) {
         self.tools.retain(|t| t.id != id);
+        self.tool_source_functions.remove(&id);
         self.editing_tools.remove(&id);
         self.collapsed_tools.remove(&id);
         self.tool_inputs.remove(&id);
@@ -5299,6 +5320,10 @@ impl Render for PromptDebugger {
         }
         let picker_search_input = self.tool_picker_search_input.clone().unwrap();
 
+        // 选择器里已经加进本页的函数：置灰并标「已添加」，同一个函数不能再选一次。
+        let added_function_ids: HashSet<i64> =
+            self.tool_source_functions.values().copied().collect();
+
         let temp_input = self.temp_input.clone().unwrap();
         let max_tokens_input = self.max_tokens_input.clone().unwrap();
         let top_p_input = self.top_p_input.clone().unwrap();
@@ -5487,17 +5512,23 @@ impl Render for PromptDebugger {
                                                     .description
                                                     .clone()
                                                     .unwrap_or_default();
-                                                acc.child(
-                                                    div()
-                                                        .id(SharedString::from(format!(
-                                                            "picker-function-{}",
-                                                            function_id
-                                                        )))
-                                                        .mb(px(8.0))
-                                                        .p(px(12.0))
-                                                        .border_1()
-                                                        .border_color(style.list.border)
-                                                        .rounded(px(6.0))
+                                                // 同一个函数只能选一次：已加进来的条目置灰且不可点。
+                                                let already_added =
+                                                    added_function_ids.contains(&function_id);
+                                                let mut item = div()
+                                                    .id(SharedString::from(format!(
+                                                        "picker-function-{}",
+                                                        function_id
+                                                    )))
+                                                    .mb(px(8.0))
+                                                    .p(px(12.0))
+                                                    .border_1()
+                                                    .border_color(style.list.border)
+                                                    .rounded(px(6.0));
+                                                if already_added {
+                                                    item = item.opacity(0.55);
+                                                } else {
+                                                    item = item
                                                         .cursor(CursorStyle::PointingHand)
                                                         .hover(|s| {
                                                             s.bg(style
@@ -5515,8 +5546,10 @@ impl Render for PromptDebugger {
                                                                     cx.notify();
                                                                 });
                                                             }
-                                                        })
-                                                        .child(
+                                                        });
+                                                }
+                                                acc.child(
+                                                    item.child(
                                                             div()
                                                                 .flex()
                                                                 .items_center()
@@ -5534,16 +5567,42 @@ impl Render for PromptDebugger {
                                                                 )
                                                                 .child(
                                                                     div()
-                                                                        .text_size(px(12.0))
-                                                                        .text_color(
-                                                                            style
-                                                                                .list
-                                                                                .muted_foreground,
+                                                                        .flex()
+                                                                        .items_center()
+                                                                        .gap(px(6.0))
+                                                                        .child(
+                                                                            div()
+                                                                                .text_size(px(12.0))
+                                                                                .text_color(
+                                                                                    style
+                                                                                        .list
+                                                                                        .muted_foreground,
+                                                                                )
+                                                                                .child(
+                                                                                    SharedString::from(
+                                                                                        function_identifier
+                                                                                            .as_str(),
+                                                                                    ),
+                                                                                ),
                                                                         )
-                                                                        .child(SharedString::from(
-                                                                            function_identifier
-                                                                                .as_str(),
-                                                                        )),
+                                                                        .children(
+                                                                            already_added.then(|| {
+                                                                                div()
+                                                                                    .px(px(6.0))
+                                                                                    .py(px(1.0))
+                                                                                    .rounded(px(4.0))
+                                                                                    .bg(style
+                                                                                        .action(ActionRole::Neutral)
+                                                                                        .background)
+                                                                                    .text_size(px(11.0))
+                                                                                    .text_color(
+                                                                                        style
+                                                                                            .list
+                                                                                            .muted_foreground,
+                                                                                    )
+                                                                                    .child("已添加")
+                                                                            }),
+                                                                        ),
                                                                 ),
                                                         )
                                                         .child(
@@ -5578,10 +5637,12 @@ impl Render for PromptDebugger {
 #[cfg(test)]
 mod tests {
     use super::{
-        DebugMessage, MessageRole, detached_flag_value, models_for_preset, valid_model_selection,
+        DebugMessage, MessageRole, detached_flag_value, function_already_added, models_for_preset,
+        valid_model_selection,
     };
     use crate::datasource::entity_store::Function as DbFunction;
     use crate::datasource::llm_store::LlmModel;
+    use std::collections::HashMap;
 
     fn function(id: i64, name: &str, description: Option<&str>) -> DbFunction {
         DbFunction {
@@ -5622,6 +5683,22 @@ mod tests {
 
         assert_eq!(tool.name, "无描述函数");
         assert!(tool.description.is_empty());
+    }
+
+    /// 同一个函数只能选一次：已加入的工具（值里出现过的函数 id）不能再选。
+    #[test]
+    fn same_function_cannot_be_added_twice() {
+        let mut sources: HashMap<u64, i64> = HashMap::new();
+        assert!(!function_already_added(&sources, 7));
+
+        sources.insert(1, 7);
+        assert!(function_already_added(&sources, 7));
+        assert!(!function_already_added(&sources, 8));
+
+        // 手动新建的工具没有来源函数，不影响判断。
+        sources.insert(2, 9);
+        assert!(function_already_added(&sources, 7));
+        assert!(function_already_added(&sources, 9));
     }
 
     fn model(id: i64, preset_id: i64, priority: i32) -> LlmModel {

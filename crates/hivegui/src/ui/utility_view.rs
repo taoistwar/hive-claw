@@ -53,6 +53,15 @@ impl UtilityView {
             view.reload_detached_window_settings(cx);
         });
     }
+
+    /// 关掉内嵌提示词调试页打开的执行历史独立窗口（查看 / 对比）。
+    ///
+    /// 桌面版主窗口关闭时调用：这些独立窗口是主窗口的派生窗口，主窗口退出后
+    /// 不应继续留在桌面上（否则应用会因为有窗口存在而不退出）。
+    pub fn close_prompt_debugger_windows(&mut self, cx: &mut Context<Self>) {
+        self.prompt_debugger
+            .update(cx, |view, cx| view.close_all_detached_windows(cx));
+    }
 }
 
 impl Render for UtilityView {

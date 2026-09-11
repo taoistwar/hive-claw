@@ -358,6 +358,14 @@ pub fn run(config: Config) -> anyhow::Result<()> {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(b)),
                 window_decorations: Some(WindowDecorations::Server),
+                // OS-level window title (WM_NAME / xdg toplevel title), so the
+                // taskbar and window list show the product name instead of the
+                // executable name. Mirrors the in-app titlebar brand (and the
+                // Prompt Studio entry, which sets its own title).
+                titlebar: Some(TitlebarOptions {
+                    title: Some("HiveClaw".into()),
+                    ..Default::default()
+                }),
                 ..Default::default()
             },
             move |window, cx| {
@@ -485,6 +493,8 @@ pub struct PromptStudioRoot {
     llm_config: Entity<LLMConfigView>,
     global_config: Entity<GlobalConfigView>,
     category_view: Entity<CategoryView>,
+    /// `on_window_should_close` 是否已经挂到本窗口上（只需挂一次）。
+    window_close_hook_registered: bool,
 }
 
 impl PromptStudioRoot {
@@ -520,6 +530,7 @@ impl PromptStudioRoot {
             llm_config,
             global_config,
             category_view,
+            window_close_hook_registered: false,
         }
     }
 }
@@ -581,7 +592,18 @@ fn prompt_studio_nav_button(
 }
 
 impl Render for PromptStudioRoot {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 与桌面版主窗口同样：系统/窗口管理器关闭窗口时也要先把提示词调试页
+        // 打开的独立窗口关掉（独立窗口会让应用以为还有窗口存在而不退出）。
+        if !self.window_close_hook_registered {
+            self.window_close_hook_registered = true;
+            let prompt_debugger = self.prompt_debugger.clone();
+            window.on_window_should_close(cx, move |_, cx| {
+                prompt_debugger.update(cx, |view, cx| view.close_all_detached_windows(cx));
+                true
+            });
+        }
+
         let colors = shell_theme_colors(cx.theme());
         let sidebar_background = cx.theme().sidebar;
         let sidebar_foreground = cx.theme().sidebar_foreground;
@@ -625,23 +647,39 @@ impl Render for PromptStudioRoot {
             _ => div().into_any_element(),
         };
 
+        let prompt_debugger_for_close = self.prompt_debugger.clone();
         let titlebar = div()
             .id("ps-titlebar")
             .h(px(36.0))
             .flex()
             .flex_row()
             .items_center()
+            .justify_between()
             .px(px(8.0))
             .bg(colors.title_bar)
             .border_b_1()
             .border_color(colors.title_bar_border)
             .text_color(colors.foreground)
+            .cursor(CursorStyle::OpenHand)
+            .on_mouse_down(MouseButton::Left, |e, w, _| {
+                if e.click_count == 2 {
+                    w.zoom_window();
+                } else {
+                    w.start_window_move();
+                }
+            })
             .child(
                 div()
                     .text_size(px(14.0))
                     .font_weight(gpui_kit::FontWeight::BOLD)
                     .child("Ngy 提示词工程 · Ngy Prompt Studio"),
-            );
+            )
+            .child(window_control_buttons(&colors, move |_, _, cx| {
+                // 先关掉提示词调试页打开的执行历史独立窗口，再退出应用。
+                prompt_debugger_for_close
+                    .update(cx, |view, cx| view.close_all_detached_windows(cx));
+                cx.quit();
+            }));
 
         let statusbar = div()
             .id("ps-statusbar")
@@ -699,6 +737,8 @@ pub struct RootView {
     ai: Entity<AiView>,
     tools: Entity<UtilityView>,
     last_route: AppRoute,
+    /// `on_window_should_close` 是否已经挂到本窗口上（只需挂一次）。
+    window_close_hook_registered: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -764,12 +804,26 @@ impl RootView {
             ai,
             tools,
             last_route: AppRoute::Home,
+            window_close_hook_registered: false,
         }
     }
 }
 
 impl Render for RootView {
-    fn render(&mut self, _w: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 用窗口管理器（Alt+F4、标题栏 ×）关闭主窗口时不会经过自绘的关闭按钮。
+        // 而独立窗口也让“还有窗口存在”成立，应用不会随之退出 → 主窗口消失后
+        // 桌面上会剩下孤立的执行历史窗口。这里挂上关闭前钩子：无论从哪条路关闭
+        // 主窗口，都先把派生的独立窗口一并关掉。
+        if !self.window_close_hook_registered {
+            self.window_close_hook_registered = true;
+            let tools = self.tools.clone();
+            window.on_window_should_close(cx, move |_, cx| {
+                tools.update(cx, |view, cx| view.close_prompt_debugger_windows(cx));
+                true
+            });
+        }
+
         let route = cx.global::<HiveGuiAppState>().route;
         // 通过左侧菜单/侧边栏等导航进入「工具」路由时，强制刷新 LLM
         // 提示词调试的 Preset / Model / Provider 列表（用户在 AI 管理等
@@ -786,6 +840,7 @@ impl Render for RootView {
             AppRoute::Tools => self.tools.clone().into_any_element(),
         };
 
+        let tools_for_close = self.tools.clone();
         let titlebar = div()
             .id("titlebar")
             .size_full()
@@ -814,36 +869,11 @@ impl Render for RootView {
                         .child("HiveClaw"),
                 ),
             )
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .h_full()
-                    .child(wbtn(
-                        "―",
-                        colors.secondary_hover,
-                        colors.secondary_active,
-                        colors.foreground,
-                        colors.foreground,
-                        |w, _, _| w.minimize_window(),
-                    ))
-                    .child(wbtn(
-                        "□",
-                        colors.secondary_hover,
-                        colors.secondary_active,
-                        colors.foreground,
-                        colors.foreground,
-                        |w, _, _| w.zoom_window(),
-                    ))
-                    .child(wbtn(
-                        "✕",
-                        colors.danger,
-                        colors.danger_active,
-                        colors.foreground,
-                        colors.danger_foreground,
-                        |_, _, cx| cx.quit(),
-                    )),
-            );
+            .child(window_control_buttons(&colors, move |_, _, cx| {
+                // 先关掉提示词调试页打开的执行历史独立窗口，再退出应用。
+                tools_for_close.update(cx, |view, cx| view.close_prompt_debugger_windows(cx));
+                cx.quit();
+            }));
 
         let statusbar = div()
             .id("statusbar")
@@ -902,7 +932,56 @@ fn shell_layout(
         .child(div().h(px(24.0)).flex_shrink_0().child(statusbar))
 }
 
+/// 标题栏「最小化 / 最大化 / 关闭」按钮的测试选择器。
+const WINDOW_CONTROL_MINIMIZE: &str = "WINDOW_CONTROL_MINIMIZE";
+const WINDOW_CONTROL_MAXIMIZE: &str = "WINDOW_CONTROL_MAXIMIZE";
+const WINDOW_CONTROL_CLOSE: &str = "WINDOW_CONTROL_CLOSE";
+
+/// 标题栏右上角的「最小化 / 最大化 / 关闭」按钮组。
+///
+/// 两个应用的主窗口（桌面版 [`RootView`]、Prompt Studio [`PromptStudioRoot`]）
+/// 共用这一套控件：窗口都带系统装饰但关闭/最小化等操作由自绘标题栏提供。
+/// `close` 由调用方给出，因为两个入口在退出前要收尾的对象不同。
+fn window_control_buttons(
+    colors: &ShellThemeColors,
+    close: impl Fn(&mut Window, &gpui_kit::MouseDownEvent, &mut gpui_kit::App) + 'static,
+) -> gpui_kit::Div {
+    div()
+        .flex()
+        .flex_row()
+        .h_full()
+        .flex_shrink_0()
+        .child(wbtn(
+            WINDOW_CONTROL_MINIMIZE,
+            "―",
+            colors.secondary_hover,
+            colors.secondary_active,
+            colors.foreground,
+            colors.foreground,
+            |w, _, _| w.minimize_window(),
+        ))
+        .child(wbtn(
+            WINDOW_CONTROL_MAXIMIZE,
+            "□",
+            colors.secondary_hover,
+            colors.secondary_active,
+            colors.foreground,
+            colors.foreground,
+            |w, _, _| w.zoom_window(),
+        ))
+        .child(wbtn(
+            WINDOW_CONTROL_CLOSE,
+            "✕",
+            colors.danger,
+            colors.danger_active,
+            colors.foreground,
+            colors.danger_foreground,
+            close,
+        ))
+}
+
 fn wbtn(
+    selector: &'static str,
     icon: &'static str,
     hc: Hsla,
     ac: Hsla,
@@ -911,7 +990,8 @@ fn wbtn(
     f: impl Fn(&mut Window, &gpui_kit::MouseDownEvent, &mut gpui_kit::App) + 'static,
 ) -> impl IntoElement {
     div()
-        .id(SharedString::from(format!("wbtn-{icon}")))
+        .id(SharedString::from(selector))
+        .debug_selector(move || selector.to_owned())
         .w(px(46.0))
         .h(px(32.0))
         .flex()
@@ -934,7 +1014,10 @@ mod tests {
         prelude::*, px, size,
     };
 
-    use super::{shell_layout, shell_theme_colors};
+    use super::{
+        WINDOW_CONTROL_CLOSE, WINDOW_CONTROL_MAXIMIZE, WINDOW_CONTROL_MINIMIZE, shell_layout,
+        shell_theme_colors, window_control_buttons,
+    };
 
     struct ShellLayoutTestView;
 
@@ -970,6 +1053,44 @@ mod tests {
         assert_eq!(sidebar.bottom(), statusbar.top());
         assert_eq!(body.bottom(), statusbar.top());
         assert_eq!(sidebar.right(), body.left());
+    }
+
+    /// 只渲染标题栏右侧的窗口控件，用于断言三个按钮都在（FR：主窗口右上角
+    /// 要有最小化 / 最大化 / 关闭）。
+    struct WindowControlsTestView;
+
+    impl Render for WindowControlsTestView {
+        fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
+            let colors = shell_theme_colors(&Theme::default());
+            div()
+                .size_full()
+                .child(window_control_buttons(&colors, |_, _, _| {}))
+        }
+    }
+
+    #[gpui_kit::test]
+    fn titlebar_offers_minimize_maximize_and_close_buttons(cx: &mut TestAppContext) {
+        let window = cx.open_window(size(px(400.0), px(36.0)), |_, _| WindowControlsTestView);
+        cx.run_until_parked();
+
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+        let minimize = cx
+            .debug_bounds(WINDOW_CONTROL_MINIMIZE)
+            .expect("minimize button bounds");
+        let maximize = cx
+            .debug_bounds(WINDOW_CONTROL_MAXIMIZE)
+            .expect("maximize button bounds");
+        let close = cx
+            .debug_bounds(WINDOW_CONTROL_CLOSE)
+            .expect("close button bounds");
+
+        assert_eq!(minimize.size.height, px(32.0));
+        assert_eq!(maximize.size.height, px(32.0));
+        assert_eq!(close.size.height, px(32.0));
+        // 右上角从左到右：最小化 → 最大化 → 关闭。
+        assert!(minimize.right() <= maximize.left());
+        assert!(maximize.right() <= close.left());
+        assert!(close.right() <= px(400.0));
     }
 
     #[test]

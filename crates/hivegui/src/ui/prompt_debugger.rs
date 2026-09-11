@@ -1270,6 +1270,19 @@ impl PromptDebugger {
         }
     }
 
+    /// 关掉当前打开的全部独立窗口（「查看执行记录」与「执行历史对比」）。
+    ///
+    /// 独立窗口由主窗口派生：主窗口退出后它们不应留在桌面上，因此两个应用
+    /// 的主窗口（桌面版 [`crate::ui::app::RootView`]、Prompt Studio）在关闭时
+    /// 都会调它 —— 自绘关闭按钮走 [`crate::ui::app`] 里的关闭处理，系统/窗口
+    /// 管理器关闭走挂在该窗口上的 `on_window_should_close`。
+    pub fn close_all_detached_windows(&mut self, cx: &mut App) {
+        let open: Vec<_> = self.detached_windows.drain().map(|(_, handle)| handle).collect();
+        for handle in open {
+            _ = handle.update(cx, |_, window, _| window.remove_window());
+        }
+    }
+
     /// 把一组记录放进独立窗口。
     ///
     /// 同一组记录（同一个窗口键）已经开着窗口时只把它提到前台，不再新开。
@@ -1302,6 +1315,13 @@ impl PromptDebugger {
         } else {
             px(900.0)
         };
+        // OS 层窗口标题（WM_NAME / xdg toplevel title）：任务栏与窗口列表里按
+        // 内容区分「查看」和「对比」，文案与窗口内自绘标题栏保持一致。
+        let title = if records.len() > 1 {
+            format!("对比 ({} 条记录)", records.len())
+        } else {
+            "查看执行记录".to_string()
+        };
         let bounds = Bounds::centered(None, size(width, px(DETACHED_WINDOW_HEIGHT)), cx);
         let parent = cx.weak_entity();
         let window_key = key.clone();
@@ -1309,6 +1329,10 @@ impl PromptDebugger {
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),
                 window_decorations: Some(WindowDecorations::Server),
+                titlebar: Some(TitlebarOptions {
+                    title: Some(title.into()),
+                    ..Default::default()
+                }),
                 focus: true,
                 show: true,
                 is_resizable: true,
@@ -6976,6 +7000,77 @@ mod geometry_tests {
             1,
             "同一组记录只应有一个独立窗口"
         );
+    }
+
+    /// 主窗口关闭前把「查看执行记录」「执行历史对比」两类独立窗口一并关掉：
+    /// 独立窗口也算“还有窗口存在”，留着它们会让应用不退出。
+    #[gpui_kit::test]
+    fn closing_the_main_window_closes_every_detached_history_window(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        let _runtime_guard = runtime.enter();
+        let store = cx.new(|_| store);
+
+        let window = cx.open_window(size(px(1200.0), px(700.0)), move |_, cx| {
+            PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone())
+        });
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        // 单条记录（查看）与多条记录（对比）各开一个独立窗口。
+        let handles = typed_window
+            .update(&mut cx, |view, _, cx| {
+                view.open_detached_window(
+                    vec![detached_fixture_record(1, "m", "r")],
+                    ViewModalTab::Formatted,
+                    false,
+                    cx,
+                );
+                view.open_detached_window(
+                    vec![
+                        detached_fixture_record(2, "m", "r"),
+                        detached_fixture_record(3, "m", "r"),
+                    ],
+                    ViewModalTab::Formatted,
+                    false,
+                    cx,
+                );
+                let handles: Vec<_> =
+                    view.detached_windows.values().cloned().collect();
+                handles
+            })
+            .expect("open detached history windows");
+        cx.run_until_parked();
+        assert_eq!(handles.len(), 2, "查看与对比各应有一个独立窗口");
+
+        typed_window
+            .update(&mut cx, |view, _, cx| view.close_all_detached_windows(cx))
+            .expect("close detached history windows");
+        cx.run_until_parked();
+
+        assert!(
+            typed_window
+                .update(&mut cx, |view, _, _| view.detached_windows.is_empty())
+                .expect("read detached registry"),
+            "关闭主窗口后不应再登记任何独立窗口"
+        );
+        for handle in handles {
+            assert!(
+                handle.update(&mut cx, |_, _, _| {}).is_err(),
+                "独立窗口应已被真正关闭"
+            );
+        }
     }
 
     #[gpui_kit::test]

@@ -165,8 +165,23 @@ enum RightPanelTab {
 /// 持久化到 `global_configs` 的键名，用于记住左侧 LLM 设定表单。
 const PROMPT_DEBUGGER_SETTINGS_KEY: &str = "prompt_debugger_state";
 
+/// 全局配置（boolean）：对比时是否直接把内容放进独立窗口，而不是弹窗。
+const PROMPT_DEBUGGER_DETACHED_COMPARISON_KEY: &str = "prompt_debugger_detached_comparison";
+
+/// 全局配置（boolean）：查看单条执行记录时是否直接开独立窗口，而不是弹窗。
+const PROMPT_DEBUGGER_DETACHED_RECORD_KEY: &str = "prompt_debugger_detached_record_view";
+
+/// 上面两项配置在「全局配置」页里显示的名字。
+const DETACHED_COMPARISON_CONFIG_NAME: &str = "提示词调试：对比使用独立窗口";
+const DETACHED_RECORD_CONFIG_NAME: &str = "提示词调试：查看执行记录使用独立窗口";
+
 /// 历史记录列表每页显示的条数。
 const HISTORY_PAGE_SIZE: usize = 10;
+
+/// 独立窗口的默认高度。
+const DETACHED_WINDOW_HEIGHT: f32 = 620.0;
+/// 独立窗口允许的最大宽度（更宽的对比表格由横向滚动条承载）。
+const DETACHED_WINDOW_MAX_WIDTH: f32 = 1600.0;
 
 /// 左侧表单的持久化快照。
 ///
@@ -267,6 +282,20 @@ pub struct PromptDebugger {
     /// Ctrl/Cmd+C 复制、右键「复制 / 全选」。状态按 key 复用，避免每次重绘
     /// 都新建实体。
     view_text_states: HashMap<String, Entity<TextareaState>>,
+    /// 来自全局配置：对比时直接开独立窗口（不弹窗）。
+    detached_comparison: bool,
+    /// 来自全局配置：查看单条执行记录时直接开独立窗口（不弹窗）。
+    detached_record_view: bool,
+    /// 已打开的独立窗口：`窗口键 → 窗口句柄`。
+    ///
+    /// 键由记录 id 生成（`rec:{id}` / `cmp:{排序后的 id 列表}`），因此同一组
+    /// 记录只会存在一个窗口。
+    detached_windows: HashMap<String, WindowHandle<gpui_kit::component::Root>>,
+    /// `on_window_closed` 的订阅句柄。
+    ///
+    /// 该回调不携带窗口 id（见 gpui `App::on_window_closed`），只能在任意窗口
+    /// 关闭时全量剔除失效句柄；Subscription 必须被持有，否则订阅立即失效。
+    _detached_window_closed: Option<Subscription>,
     // 左侧表单校验提示（点击执行但左侧未设置时显示）
     form_error: Option<String>,
 }
@@ -274,8 +303,18 @@ pub struct PromptDebugger {
 impl PromptDebugger {
     pub fn new(cx: &mut Context<Self>, store: Entity<Store>, llm_store: LlmStore) -> Self {
         let mut this = Self::new_unloaded(cx, store, llm_store);
+        let weak = cx.weak_entity();
+        // 回调带回被关闭窗口的 id，按 id 精确剔除句柄（不必全量探测）。
+        this._detached_window_closed = Some(cx.on_window_closed(move |cx, window_id| {
+            weak.update(cx, |this, _| {
+                this.detached_windows
+                    .retain(|_, handle| handle.window_id() != window_id);
+            })
+            .ok();
+        }));
         // 先尝试回填上次保存的左侧 LLM 设定，再加载 Preset/Model 列表。
         this.load_settings(cx);
+        this.load_detached_window_settings(cx);
         this.load_history();
         this
     }
@@ -354,6 +393,10 @@ impl PromptDebugger {
             view_modal_tab: ViewModalTab::Formatted,
             show_only_diff: false,
             view_text_states: HashMap::new(),
+            detached_comparison: false,
+            detached_record_view: false,
+            detached_windows: HashMap::new(),
+            _detached_window_closed: None,
             form_error: None,
         }
     }
@@ -383,6 +426,69 @@ impl PromptDebugger {
             }
         })
         .detach();
+    }
+
+    /// 读取「查看 / 对比是否使用独立窗口」的全局配置。
+    ///
+    /// 两个键缺失时按 `false` 处理，并补写一条默认值，这样用户在
+    /// 「全局配置」页能直接看到这两项（该页对 `boolean` 类型渲染 true/false
+    /// 单选）并切换。
+    fn load_detached_window_settings(&mut self, cx: &mut Context<Self>) {
+        let store = self.store.read(cx).clone();
+        let comparison_key = PROMPT_DEBUGGER_DETACHED_COMPARISON_KEY.to_string();
+        let record_key = PROMPT_DEBUGGER_DETACHED_RECORD_KEY.to_string();
+        cx.spawn(async move |this, cx| {
+            let stored_comparison = store
+                .get_global_config(&comparison_key)
+                .await
+                .ok()
+                .flatten();
+            let stored_record = store.get_global_config(&record_key).await.ok().flatten();
+
+            let comparison = stored_comparison
+                .as_deref()
+                .map(|value| value.trim() == "true")
+                .unwrap_or(false);
+            let record = stored_record
+                .as_deref()
+                .map(|value| value.trim() == "true")
+                .unwrap_or(false);
+
+            if stored_comparison.is_none() {
+                Self::seed_detached_config(
+                    &store,
+                    DETACHED_COMPARISON_CONFIG_NAME,
+                    &comparison_key,
+                )
+                .await;
+            }
+            if stored_record.is_none() {
+                Self::seed_detached_config(&store, DETACHED_RECORD_CONFIG_NAME, &record_key).await;
+            }
+
+            _ = this.update(cx, |this, cx| {
+                this.detached_comparison = comparison;
+                this.detached_record_view = record;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 把缺失的独立窗口配置项以默认值 `false` 写入全局配置。
+    async fn seed_detached_config(store: &Store, name: &str, key: &str) {
+        if let Err(err) = store
+            .upsert_global_config(name, key, "boolean", "false")
+            .await
+        {
+            tracing::warn!(
+                target: "hivegui::ui::prompt_debugger",
+                operation = "seed_detached_config",
+                outcome = "error",
+                config_key = %key,
+                error = %err,
+            );
+        }
     }
 
     /// 把持久化快照写回视图字段。数值输入框会在下次渲染时按字段值重建，
@@ -930,7 +1036,7 @@ impl PromptDebugger {
     }
 
     /// 删除单条历史记录
-    fn delete_record(&mut self, record_id: u64) {
+    fn delete_record(&mut self, record_id: u64, cx: &mut App) {
         self.execution_history.retain(|r| r.id != record_id);
         self.selected_record_ids.remove(&record_id);
         self.comparing_records.retain(|r| r.id != record_id);
@@ -938,16 +1044,19 @@ impl PromptDebugger {
         if self.view_records.is_empty() {
             self.show_view_modal = false;
         }
+        // 记录没了，展示它的独立窗口也失去意义，一并关掉。
+        self.close_detached_windows_for(&[record_id], cx);
         self.context_menu = None;
         self.history_page = self.current_history_page();
         self.save_history();
     }
 
     /// 删除选中的历史记录（未选中任何记录时不做任何事）
-    fn delete_selected_records(&mut self) {
+    fn delete_selected_records(&mut self, cx: &mut App) {
         if self.selected_record_ids.is_empty() {
             return;
         }
+        let removed: Vec<u64> = self.selected_record_ids.iter().copied().collect();
         self.execution_history
             .retain(|r| !self.selected_record_ids.contains(&r.id));
         self.comparing_records
@@ -957,6 +1066,7 @@ impl PromptDebugger {
         if self.view_records.is_empty() {
             self.show_view_modal = false;
         }
+        self.close_detached_windows_for(&removed, cx);
         self.selected_record_ids.clear();
         self.context_menu = None;
         self.history_page = self.current_history_page();
@@ -964,7 +1074,7 @@ impl PromptDebugger {
     }
 
     /// 开始对比选中的记录
-    fn start_comparison(&mut self) {
+    fn start_comparison(&mut self, cx: &mut Context<Self>) {
         let selected: Vec<ExecutionRecord> = self
             .execution_history
             .iter()
@@ -972,18 +1082,168 @@ impl PromptDebugger {
             .cloned()
             .collect();
         if selected.len() >= 2 {
+            // 全局配置打开时直接进独立窗口，不再弹窗。
+            if self.detached_comparison {
+                self.open_detached_window(selected, ViewModalTab::Formatted, false, cx);
+                cx.notify();
+                return;
+            }
             self.view_records = selected;
             self.show_view_modal = true;
         }
     }
 
     /// 打开查看窗口（单条记录）
-    fn open_view_record(&mut self, record_id: u64) {
+    fn open_view_record(&mut self, record_id: u64, cx: &mut Context<Self>) {
         if let Some(record) = self.execution_history.iter().find(|r| r.id == record_id) {
-            self.view_records = vec![record.clone()];
-            self.show_view_modal = true;
+            let record = record.clone();
+            // 全局配置打开时直接进独立窗口，不再弹窗。
+            if self.detached_record_view {
+                self.open_detached_window(vec![record], ViewModalTab::Formatted, false, cx);
+                cx.notify();
+            } else {
+                self.view_records = vec![record];
+                self.show_view_modal = true;
+            }
         }
         self.context_menu = None;
+    }
+
+    /// 独立窗口的标识键。
+    ///
+    /// 单条记录用 `rec:{id}`；多条用 `cmp:{排序后的 id 列表}`，因此勾选顺序
+    /// 不同的同一组记录会落到同一个键上 —— 一组记录只会有一个独立窗口。
+    fn detached_window_key(records: &[ExecutionRecord]) -> String {
+        let mut ids: Vec<u64> = records.iter().map(|record| record.id).collect();
+        ids.sort_unstable();
+        if ids.len() == 1 {
+            format!("rec:{}", ids[0])
+        } else {
+            let joined = ids
+                .iter()
+                .map(|id| id.to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+            format!("cmp:{joined}")
+        }
+    }
+
+    /// 从窗口键解析出它承载的记录 id。
+    fn detached_window_key_ids(key: &str) -> Vec<u64> {
+        key.split_once(':')
+            .map(|(_, ids)| {
+                ids.split(',')
+                    .filter_map(|id| id.trim().parse::<u64>().ok())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// 剔除已经关闭的独立窗口句柄。
+    ///
+    /// 窗口关闭后 `WindowHandle::update` 会返回 `Err`，据此判定失效。
+    fn prune_detached_windows(&mut self, cx: &mut App) {
+        self.detached_windows
+            .retain(|_, handle| handle.update(cx, |_, _, _| {}).is_ok());
+    }
+
+    /// 关掉所有承载了 `record_ids` 中任意记录的独立窗口。
+    fn close_detached_windows_for(&mut self, record_ids: &[u64], cx: &mut App) {
+        let stale: Vec<String> = self
+            .detached_windows
+            .keys()
+            .filter(|key| {
+                Self::detached_window_key_ids(key)
+                    .iter()
+                    .any(|id| record_ids.contains(id))
+            })
+            .cloned()
+            .collect();
+        for key in stale {
+            if let Some(handle) = self.detached_windows.remove(&key) {
+                _ = handle.update(cx, |_, window, _| window.remove_window());
+            }
+        }
+    }
+
+    /// 把一组记录放进独立窗口。
+    ///
+    /// 同一组记录（同一个窗口键）已经开着窗口时只把它提到前台，不再新开。
+    fn open_detached_window(
+        &mut self,
+        records: Vec<ExecutionRecord>,
+        tab: ViewModalTab,
+        show_only_diff: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if records.is_empty() {
+            return;
+        }
+        self.prune_detached_windows(cx);
+        let key = Self::detached_window_key(&records);
+        if let Some(handle) = self.detached_windows.get(&key)
+            && handle
+                .update(cx, |_, window, _| window.activate_window())
+                .is_ok()
+        {
+            // 该组记录的窗口还在：激活它即可。
+            return;
+        }
+        self.detached_windows.remove(&key);
+
+        let width = if records.len() > 1 {
+            let cols = records.len().min(MAX_COMPARISON_COLUMNS);
+            let table_width = 132.0 + cols as f32 * 300.0;
+            px(table_width.min(DETACHED_WINDOW_MAX_WIDTH))
+        } else {
+            px(900.0)
+        };
+        let bounds = Bounds::centered(None, size(width, px(DETACHED_WINDOW_HEIGHT)), cx);
+        let parent = cx.weak_entity();
+        let window_key = key.clone();
+        let handle = cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(bounds)),
+                window_decorations: Some(WindowDecorations::Server),
+                focus: true,
+                show: true,
+                is_resizable: true,
+                window_min_size: Some(size(px(480.0), px(320.0))),
+                ..Default::default()
+            },
+            move |window, cx| {
+                let inner = cx.new(|cx| {
+                    DetachedRecordView::new(records, tab, show_only_diff, window_key, parent, cx)
+                });
+                cx.new(|cx| gpui_kit::component::Root::new(inner, window, cx))
+            },
+        );
+        match handle {
+            Ok(handle) => {
+                self.detached_windows.insert(key, handle);
+            }
+            Err(err) => {
+                tracing::error!(
+                    target: "hivegui::ui::prompt_debugger",
+                    operation = "open_detached_window",
+                    outcome = "error",
+                    error = %err,
+                );
+            }
+        }
+    }
+
+    /// 把当前查看/对比弹窗的内容转成独立窗口（弹窗随即关闭）。
+    fn detach_current_view_modal(&mut self, cx: &mut Context<Self>) {
+        let records = self.view_records.clone();
+        if records.is_empty() {
+            return;
+        }
+        let tab = self.view_modal_tab;
+        let show_only_diff = self.show_only_diff;
+        self.close_view_modal();
+        self.open_detached_window(records, tab, show_only_diff, cx);
+        cx.notify();
     }
 
     /// 关闭查看窗口
@@ -2159,7 +2419,7 @@ fn right_panel(
             "PROMPT_HISTORY_CLEAR_SELECTED",
             style,
             &entity,
-            |view, _cx| view.delete_selected_records(),
+            |view, cx| view.delete_selected_records(cx),
         ));
 
     if selected_count >= 2 {
@@ -2170,7 +2430,7 @@ fn right_panel(
             "PROMPT_HISTORY_COMPARE",
             style,
             &entity,
-            |view, _cx| view.start_comparison(),
+            |view, cx| view.start_comparison(cx),
         ));
     }
 
@@ -2460,7 +2720,7 @@ fn history_context_menu(
                                         .child("查看")
                                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                             _ = entity_for_view.update(cx, |view, cx| {
-                                                view.open_view_record(record_id);
+                                                view.open_view_record(record_id, cx);
                                                 cx.notify();
                                             });
                                         }),
@@ -2510,7 +2770,7 @@ fn history_context_menu(
                                         .child("删除")
                                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
                                             _ = entity_for_delete.update(cx, |view, cx| {
-                                                view.delete_record(record_id);
+                                                view.delete_record(record_id, cx);
                                                 cx.notify();
                                             });
                                         }),
@@ -2528,7 +2788,7 @@ fn single_record_card(
     style: &ManagementStyle,
     states: &mut HashMap<String, Entity<TextareaState>>,
     window: &mut Window,
-    cx: &mut Context<PromptDebugger>,
+    cx: &mut App,
 ) -> impl IntoElement {
     let status_text = match &record.result {
         CallState::Success(text) => text.clone(),
@@ -2778,6 +3038,235 @@ fn json_all_same(
         .all(|(record, section)| json_dimension_value(record, section, dim) == first)
 }
 
+/// 取一条记录在 JSON 表格某个维度的「已解析值」（供差异路径计算）。
+///
+/// 「模型」维度是纯字符串，其余维度是 prettify 后的 JSON 字符串。
+fn json_dimension_value_parsed(
+    record: &ExecutionRecord,
+    section: &(String, String, String),
+    dim: &str,
+) -> serde_json::Value {
+    match dim {
+        "模型" => serde_json::Value::String(record.model_name.clone()),
+        "输入" => serde_json::from_str(&section.0).unwrap_or(serde_json::Value::Null),
+        "输出" => serde_json::from_str(&section.1).unwrap_or(serde_json::Value::Null),
+        "Metadata" => serde_json::from_str(&section.2).unwrap_or(serde_json::Value::Null),
+        _ => serde_json::Value::Null,
+    }
+}
+
+/// 计算一段 JSON 维度在多条记录间的「最小差异路径」集合（JSON pointer 形式）。
+///
+/// 只标记真正分歧的最小节点：对象/数组会逐键、逐下标递归，因此只有具体字段
+/// （如 `temperature`、某条 `messages[0].content`）会被标红，而不是把整个上层结构标红。
+fn json_dimension_diff_paths(
+    records: &[ExecutionRecord],
+    sections: &[(String, String, String)],
+    dim: &str,
+) -> HashSet<String> {
+    let values: Vec<serde_json::Value> = records
+        .iter()
+        .zip(sections.iter())
+        .map(|(record, section)| json_dimension_value_parsed(record, section, dim))
+        .collect();
+    json_diff_paths(&values)
+}
+
+/// 计算多条 JSON 值之间的「最小差异路径」集合（JSON pointer，空串表示根）。
+fn json_diff_paths(values: &[serde_json::Value]) -> HashSet<String> {
+    let mut out = HashSet::new();
+    if values.len() < 2 {
+        return out;
+    }
+    diff_recurse("", values, &mut out);
+    out
+}
+
+/// 递归比较一组对齐的 JSON 值，把分歧的「最小节点」路径记入 `out`。
+///
+/// - 全部相等 → 无差异；
+/// - 全部是对象 → 逐键递归（不会整对象标红）；
+/// - 全部是数组 → 逐下标递归（长度不一致的下标自然被标红）；
+/// - 其余（标量不同、类型不一致、或结构不同的对象/数组）→ 整节点标红。
+fn diff_recurse(path: &str, values: &[serde_json::Value], out: &mut HashSet<String>) {
+    if values.iter().all(|v| *v == values[0]) {
+        return;
+    }
+    if values.iter().all(|v| v.is_object()) {
+        let mut keys: Vec<String> = Vec::new();
+        for v in values {
+            if let serde_json::Value::Object(map) = v {
+                for k in map.keys() {
+                    if !keys.contains(k) {
+                        keys.push(k.clone());
+                    }
+                }
+            }
+        }
+        for k in keys {
+            let child_path = format!("{}/{}", path, json_pointer_escape(&k));
+            let child_vals: Vec<serde_json::Value> = values
+                .iter()
+                .map(|v| v.get(&k).cloned().unwrap_or(serde_json::Value::Null))
+                .collect();
+            diff_recurse(&child_path, &child_vals, out);
+        }
+        return;
+    }
+    if values.iter().all(|v| v.is_array()) {
+        let max_len = values
+            .iter()
+            .filter_map(|v| v.as_array())
+            .map(|a| a.len())
+            .max()
+            .unwrap_or(0);
+        for i in 0..max_len {
+            let child_path = format!("{}/{}", path, i);
+            let child_vals: Vec<serde_json::Value> = values
+                .iter()
+                .map(|v| {
+                    v.as_array()
+                        .and_then(|a| a.get(i))
+                        .cloned()
+                        .unwrap_or(serde_json::Value::Null)
+                })
+                .collect();
+            diff_recurse(&child_path, &child_vals, out);
+        }
+        return;
+    }
+    out.insert(path.to_string());
+}
+
+/// JSON pointer 转义：`~` → `~0`、`/` → `~1`。
+fn json_pointer_escape(key: &str) -> String {
+    key.replace('~', "~0").replace('/', "~1")
+}
+
+/// 生成带「差异标记」的 pretty JSON 行。元组第二项为 `true` 表示该行对应差异
+/// 路径，渲染时需高亮底色。缩进与标准 pretty 一致（2 空格）。
+fn pretty_json_lines(
+    value: &serde_json::Value,
+    diff_paths: &HashSet<String>,
+) -> Vec<(String, bool)> {
+    let mut lines: Vec<(String, bool)> = Vec::new();
+    match value {
+        serde_json::Value::Object(map) if !map.is_empty() => {
+            lines.push(("{".to_string(), false));
+            emit_object_body("", map, 2, diff_paths, &mut lines);
+            lines.push(("}".to_string(), false));
+        }
+        serde_json::Value::Array(arr) if !arr.is_empty() => {
+            lines.push(("[".to_string(), false));
+            emit_array_body("", arr, 2, diff_paths, &mut lines);
+            lines.push(("]".to_string(), false));
+        }
+        other => lines.push((json_scalar_repr(other), false)),
+    }
+    lines
+}
+
+fn emit_object_body(
+    parent_path: &str,
+    map: &serde_json::Map<String, serde_json::Value>,
+    indent: usize,
+    diff_paths: &HashSet<String>,
+    lines: &mut Vec<(String, bool)>,
+) {
+    let entries: Vec<(&String, &serde_json::Value)> = map.iter().collect();
+    for (i, (k, v)) in entries.iter().enumerate() {
+        let child_path = format!("{}/{}", parent_path, json_pointer_escape(k));
+        emit_key_value(
+            &child_path,
+            k,
+            v,
+            indent,
+            i + 1 == entries.len(),
+            diff_paths,
+            lines,
+        );
+    }
+}
+
+fn emit_key_value(
+    path: &str,
+    key: &str,
+    value: &serde_json::Value,
+    indent: usize,
+    last: bool,
+    diff_paths: &HashSet<String>,
+    lines: &mut Vec<(String, bool)>,
+) {
+    let pad = " ".repeat(indent);
+    let comma = if last { "" } else { "," };
+    let marked = diff_paths.contains(path);
+    match value {
+        serde_json::Value::Object(map) if !map.is_empty() => {
+            lines.push((format!("{pad}\"{key}\": {{"), marked));
+            emit_object_body(path, map, indent + 2, diff_paths, lines);
+            lines.push((format!("{pad}}}"), false));
+        }
+        serde_json::Value::Array(arr) if !arr.is_empty() => {
+            lines.push((format!("{pad}\"{key}\": ["), marked));
+            emit_array_body(path, arr, indent + 2, diff_paths, lines);
+            lines.push((format!("{pad}]"), false));
+        }
+        other => {
+            lines.push((format!("{pad}\"{key}\": {}{comma}", json_scalar_repr(other)), marked));
+        }
+    }
+}
+
+fn emit_array_body(
+    parent_path: &str,
+    arr: &[serde_json::Value],
+    indent: usize,
+    diff_paths: &HashSet<String>,
+    lines: &mut Vec<(String, bool)>,
+) {
+    for (i, v) in arr.iter().enumerate() {
+        let child_path = format!("{parent_path}/{i}");
+        emit_array_element(&child_path, v, indent, i + 1 == arr.len(), diff_paths, lines);
+    }
+}
+
+fn emit_array_element(
+    path: &str,
+    value: &serde_json::Value,
+    indent: usize,
+    last: bool,
+    diff_paths: &HashSet<String>,
+    lines: &mut Vec<(String, bool)>,
+) {
+    let pad = " ".repeat(indent);
+    let comma = if last { "" } else { "," };
+    let marked = diff_paths.contains(path);
+    match value {
+        serde_json::Value::Object(map) if !map.is_empty() => {
+            lines.push((format!("{pad}{{"), marked));
+            emit_object_body(path, map, indent + 2, diff_paths, lines);
+            lines.push((format!("{pad}}}{comma}"), false));
+        }
+        serde_json::Value::Array(arr) if !arr.is_empty() => {
+            lines.push((format!("{pad}["), marked));
+            emit_array_body(path, arr, indent + 2, diff_paths, lines);
+            lines.push((format!("{pad}]{comma}"), false));
+        }
+        other => {
+            lines.push((format!("{pad}{}{comma}", json_scalar_repr(other)), marked));
+        }
+    }
+}
+
+/// 标量（含空对象/空数组）的 JSON 字符串表示。
+fn json_scalar_repr(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::Object(map) if map.is_empty() => "{}".to_string(),
+        serde_json::Value::Array(arr) if arr.is_empty() => "[]".to_string(),
+        _ => serde_json::to_string(value).unwrap_or_else(|_| "null".to_string()),
+    }
+}
+
 /// 弹窗正文只读文本的最大行数（`auto_grow` 上限）。
 ///
 /// 输入框内部没有滚轮处理器，内容一旦超过 `max_rows` 就会被裁掉且无法滚动，
@@ -2801,7 +3290,7 @@ fn view_selectable_text(
     text: &str,
     style: &ManagementStyle,
     window: &mut Window,
-    cx: &mut Context<PromptDebugger>,
+    cx: &mut App,
 ) -> Textarea {
     let state = match states.get(&key) {
         Some(state) => {
@@ -2840,7 +3329,7 @@ fn comparison_table(
     show_only_diff: bool,
     states: &mut HashMap<String, Entity<TextareaState>>,
     window: &mut Window,
-    cx: &mut Context<PromptDebugger>,
+    cx: &mut App,
 ) -> impl IntoElement {
     let col_count = records.len().min(20) + 1; // +1 为维度列
     let col_width = px(300.0);
@@ -3043,14 +3532,10 @@ fn view_modal(
     max_panel_width: Pixels,
     text_states: &mut HashMap<String, Entity<TextareaState>>,
     window: &mut Window,
-    cx: &mut Context<PromptDebugger>,
+    cx: &mut App,
 ) -> impl IntoElement {
     let is_comparison = records.len() > 1;
-    let title = if is_comparison {
-        format!("对比 ({} 条记录)", records.len())
-    } else {
-        "查看执行记录".to_string()
-    };
+    let host = RecordViewHost::Modal(entity.clone());
 
     // 预先拼接用于"复制"按钮的文本（避免在 click handler 内再次构造）。
     // 复制按钮跟随当前 Tab：格式化 → 文本摘要；JSON → 输入/输出/Metadata 分节。
@@ -3086,13 +3571,8 @@ fn view_modal(
         .items_center()
         .justify_center()
         .on_mouse_down(MouseButton::Left, {
-            let entity = entity.clone();
-            move |_, _, cx| {
-                entity.update(cx, |view, cx| {
-                    view.close_view_modal();
-                    cx.notify();
-                });
-            }
+            let host = host.clone();
+            move |_, window, cx| host.close(window, cx)
         })
         .child(
             div()
@@ -3116,133 +3596,15 @@ fn view_modal(
                 .on_any_mouse_down(|_, _, cx| {
                     cx.stop_propagation();
                 })
-                .child(
-                    // 标题栏
-                    div()
-                        .flex()
-                        .items_center()
-                        .justify_between()
-                        .px(px(16.0))
-                        .py(px(12.0))
-                        .border_b_1()
-                        .border_color(style.list.border)
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(12.0))
-                                .child(
-                                    div()
-                                        .text_size(px(16.0))
-                                        .font_weight(FontWeight::BOLD)
-                                        .child(title),
-                                )
-                                // 仅看差异复选框（仅对比模式显示）
-                                .child(if is_comparison {
-                                    let checked = show_only_diff;
-                                    div()
-                                        .debug_selector(|| {
-                                            "PROMPT_HISTORY_VIEW_ONLY_DIFF".to_owned()
-                                        })
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(4.0))
-                                        .cursor(CursorStyle::PointingHand)
-                                        .on_mouse_down(MouseButton::Left, {
-                                            let entity = entity.clone();
-                                            move |_, _, cx| {
-                                                entity.update(cx, |view, cx| {
-                                                    view.toggle_show_only_diff();
-                                                    cx.notify();
-                                                });
-                                            }
-                                        })
-                                        .child(
-                                            div()
-                                                .w(px(14.0))
-                                                .h(px(14.0))
-                                                .border_1()
-                                                .border_color(style.list.border)
-                                                .rounded(px(2.0))
-                                                .bg(if checked {
-                                                    style.action(ActionRole::Main).background
-                                                } else {
-                                                    style.list.row
-                                                })
-                                                .flex()
-                                                .items_center()
-                                                .justify_center()
-                                                .child(if checked {
-                                                    div()
-                                                        .text_size(px(10.0))
-                                                        .text_color(gpui_kit::white())
-                                                        .child("✓")
-                                                } else {
-                                                    div()
-                                                }),
-                                        )
-                                        .child(
-                                            div()
-                                                .text_size(px(12.0))
-                                                .text_color(style.list.muted_foreground)
-                                                .child("仅看差异"),
-                                        )
-                                        .into_any_element()
-                                } else {
-                                    div().into_any_element()
-                                }),
-                        )
-                        .child(
-                            div()
-                                .flex()
-                                .items_center()
-                                .gap(px(8.0))
-                                .child(view_modal_tabs(tab, entity.clone(), style))
-                                .child(
-                                    // 复制按钮：把整组记录的文本写入剪贴板，
-                                    // 弥补 GPUI 0.2 暂不支持 div 内文本拖选的限制。
-                                    div()
-                                        .debug_selector(|| "PROMPT_HISTORY_VIEW_COPY".to_owned())
-                                        .flex()
-                                        .items_center()
-                                        .gap(px(4.0))
-                                        .cursor(CursorStyle::PointingHand)
-                                        .hover(|s| s.opacity(0.7))
-                                        .child(Icon::new(IconName::Copy).small())
-                                        .child(
-                                            div()
-                                                .text_size(px(12.0))
-                                                .text_color(style.list.muted_foreground)
-                                                .child("复制"),
-                                        )
-                                        .on_mouse_down(MouseButton::Left, {
-                                            let text = copy_text.clone();
-                                            move |_, _, cx| {
-                                                cx.write_to_clipboard(ClipboardItem::new_string(
-                                                    text.clone(),
-                                                ));
-                                                cx.stop_propagation();
-                                            }
-                                        }),
-                                )
-                                .child(
-                                    div()
-                                        .debug_selector(|| "PROMPT_HISTORY_VIEW_CLOSE".to_owned())
-                                        .cursor(CursorStyle::PointingHand)
-                                        .hover(|s| s.opacity(0.7))
-                                        .child(Icon::new(IconName::Close).small())
-                                        .on_mouse_down(MouseButton::Left, {
-                                            let entity = entity.clone();
-                                            move |_, _, cx| {
-                                                entity.update(cx, |view, cx| {
-                                                    view.close_view_modal();
-                                                    cx.notify();
-                                                });
-                                            }
-                                        }),
-                                ),
-                        ),
-                )
+                .child(record_view_header(
+                    &host,
+                    records.len(),
+                    tab,
+                    show_only_diff,
+                    &copy_text,
+                    style,
+                    window,
+                ))
                 .child(
                     // 内容区域。不能用 `overflow_y_scrollbar()`：其 Scrollable
                     // 包装器把高度全部换成百分比（size_full/min_h_full），在
@@ -3263,43 +3625,498 @@ fn view_modal(
                         .horizontal_scrollbar(view_scroll)
                         .px(px(16.0))
                         .py(px(12.0))
-                        .child(match tab {
-                            ViewModalTab::Formatted => {
-                                if is_comparison {
-                                    comparison_table(
-                                        records,
-                                        style,
-                                        show_only_diff,
-                                        text_states,
-                                        window,
-                                        cx,
-                                    )
-                                    .into_any_element()
-                                } else {
-                                    single_record_card(&records[0], style, text_states, window, cx)
-                                        .into_any_element()
-                                }
-                            }
-                            ViewModalTab::Json => {
-                                // 多条对比走横向表格（列 = 各记录），单条仍是纵向分节。
-                                if is_comparison {
-                                    json_comparison_table(
-                                        records,
-                                        style,
-                                        show_only_diff,
-                                        text_states,
-                                        window,
-                                        cx,
-                                    )
-                                    .into_any_element()
-                                } else {
-                                    json_tab_view(records, style, text_states, window, cx)
-                                        .into_any_element()
-                                }
-                            }
-                        }),
+                        .child(record_view_body(
+                            records,
+                            style,
+                            tab,
+                            show_only_diff,
+                            text_states,
+                            window,
+                            cx,
+                        )),
                 ),
         )
+}
+
+/// 查看/对比内容的宿主：主界面里的弹窗，或独立窗口。
+///
+/// 两种宿主的标题栏完全一致，只是「关闭」「独立窗口」的落点不同：
+/// 弹窗宿主关掉自己，独立窗口宿主关掉整个窗口；「独立窗口」按钮只在弹窗
+/// 宿主上出现（已经在独立窗口里时没有意义）。
+#[derive(Clone)]
+enum RecordViewHost {
+    Modal(Entity<PromptDebugger>),
+    Window(Entity<DetachedRecordView>),
+}
+
+impl RecordViewHost {
+    /// 调试选择器前缀：弹窗沿用历史命名，独立窗口用 `PROMPT_DETACHED`，
+    /// 避免同一个选择器同时命中两个窗口里的元素。
+    fn selector_prefix(&self) -> &'static str {
+        match self {
+            Self::Modal(_) => "PROMPT_HISTORY_VIEW",
+            Self::Window(_) => "PROMPT_DETACHED",
+        }
+    }
+
+    /// Tab 的选择器前缀：历史命名是 `PROMPT_VIEW_TAB_*`（与
+    /// `PROMPT_HISTORY_VIEW_*` 不同源），保留以免破坏既有测试。
+    fn tab_selector_prefix(&self) -> &'static str {
+        match self {
+            Self::Modal(_) => "PROMPT_VIEW",
+            Self::Window(_) => "PROMPT_DETACHED",
+        }
+    }
+
+    fn set_tab(&self, tab: ViewModalTab, cx: &mut App) {
+        match self {
+            Self::Modal(entity) => {
+                entity.update(cx, |view, cx| {
+                    if view.view_modal_tab != tab {
+                        view.view_modal_tab = tab;
+                        cx.notify();
+                    }
+                });
+            }
+            Self::Window(entity) => {
+                entity.update(cx, |view, cx| {
+                    if view.tab != tab {
+                        view.tab = tab;
+                        cx.notify();
+                    }
+                });
+            }
+        }
+    }
+
+    fn toggle_only_diff(&self, cx: &mut App) {
+        match self {
+            Self::Modal(entity) => {
+                entity.update(cx, |view, cx| {
+                    view.toggle_show_only_diff();
+                    cx.notify();
+                });
+            }
+            Self::Window(entity) => {
+                entity.update(cx, |view, cx| {
+                    view.toggle_only_diff(cx);
+                });
+            }
+        }
+    }
+
+    fn close(&self, window: &mut Window, cx: &mut App) {
+        match self {
+            Self::Modal(entity) => {
+                entity.update(cx, |view, cx| {
+                    view.close_view_modal();
+                    cx.notify();
+                });
+            }
+            Self::Window(entity) => {
+                entity.update(cx, |view, cx| {
+                    view.unregister(cx);
+                    cx.notify();
+                });
+                window.remove_window();
+            }
+        }
+    }
+
+    /// 把内容搬到独立窗口（仅弹窗宿主有效）。
+    fn detach(&self, cx: &mut App) {
+        if let Self::Modal(entity) = self {
+            entity.update(cx, |view, cx| {
+                view.detach_current_view_modal(cx);
+            });
+        }
+    }
+}
+
+/// 查看/对比内容的标题栏（弹窗与独立窗口共用）。
+#[allow(clippy::too_many_arguments)]
+fn record_view_header(
+    host: &RecordViewHost,
+    record_count: usize,
+    tab: ViewModalTab,
+    show_only_diff: bool,
+    copy_text: &str,
+    style: &ManagementStyle,
+    window: &Window,
+) -> AnyElement {
+    let is_comparison = record_count > 1;
+    let is_window = matches!(host, RecordViewHost::Window(_));
+    let title = if is_comparison {
+        format!("对比 ({record_count} 条记录)")
+    } else {
+        "查看执行记录".to_string()
+    };
+    let prefix = host.selector_prefix();
+    let header_selector = format!("{prefix}_HEADER");
+    let only_diff_selector = format!("{prefix}_ONLY_DIFF");
+    let copy_selector = format!("{prefix}_COPY");
+    let detach_selector = format!("{prefix}_DETACH");
+    let minimize_selector = format!("{prefix}_MINIMIZE");
+    let maximize_selector = format!("{prefix}_MAXIMIZE");
+    let close_selector = format!("{prefix}_CLOSE");
+    let host_for_only_diff = host.clone();
+    let host_for_detach = host.clone();
+    let host_for_close = host.clone();
+    // 独立窗口才有窗口级控制：最小化 / 最大化（还原）。
+    let maximized = is_window && window.is_maximized();
+
+    let header = div()
+        .debug_selector(move || header_selector.clone())
+        .flex()
+        .items_center()
+        .justify_between()
+        .px(px(16.0))
+        .py(px(12.0))
+        .border_b_1()
+        .border_color(style.list.border)
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(12.0))
+                .child(
+                    div()
+                        .text_size(px(16.0))
+                        .font_weight(FontWeight::BOLD)
+                        .child(title),
+                )
+                // 仅看差异复选框（仅对比模式显示）
+                .child(if is_comparison {
+                    let checked = show_only_diff;
+                    div()
+                        .debug_selector(move || only_diff_selector.clone())
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .cursor(CursorStyle::PointingHand)
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            host_for_only_diff.toggle_only_diff(cx);
+                            cx.stop_propagation();
+                        })
+                        .child(
+                            div()
+                                .w(px(14.0))
+                                .h(px(14.0))
+                                .border_1()
+                                .border_color(style.list.border)
+                                .rounded(px(2.0))
+                                .bg(if checked {
+                                    style.action(ActionRole::Main).background
+                                } else {
+                                    style.list.row
+                                })
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(if checked {
+                                    div()
+                                        .text_size(px(10.0))
+                                        .text_color(gpui_kit::white())
+                                        .child("✓")
+                                } else {
+                                    div()
+                                }),
+                        )
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(style.list.muted_foreground)
+                                .child("仅看差异"),
+                        )
+                        .into_any_element()
+                } else {
+                    div().into_any_element()
+                }),
+        )
+        .child(
+            div()
+                .flex()
+                .items_center()
+                .gap(px(8.0))
+                .child(view_modal_tabs(tab, host, style))
+                .child(
+                    // 复制按钮：把整组记录的文本写入剪贴板，
+                    // 弥补 GPUI 0.2 暂不支持 div 内文本拖选的限制。
+                    div()
+                        .debug_selector(move || copy_selector.clone())
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .cursor(CursorStyle::PointingHand)
+                        .hover(|s| s.opacity(0.7))
+                        .child(Icon::new(IconName::Copy).small())
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(style.list.muted_foreground)
+                                .child("复制"),
+                        )
+                        .on_mouse_down(MouseButton::Left, {
+                            let text = copy_text.to_string();
+                            move |_, _, cx| {
+                                cx.write_to_clipboard(ClipboardItem::new_string(text.clone()));
+                                cx.stop_propagation();
+                            }
+                        }),
+                )
+                .child(if matches!(host, RecordViewHost::Modal(_)) {
+                    // 独立窗口按钮：把弹窗内容搬到独立窗口，一组记录只开一个。
+                    div()
+                        .debug_selector(move || detach_selector.clone())
+                        .flex()
+                        .items_center()
+                        .gap(px(4.0))
+                        .cursor(CursorStyle::PointingHand)
+                        .hover(|s| s.opacity(0.7))
+                        .child(Icon::new(IconName::ExternalLink).small())
+                        .child(
+                            div()
+                                .text_size(px(12.0))
+                                .text_color(style.list.muted_foreground)
+                                .child("独立窗口"),
+                        )
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            host_for_detach.detach(cx);
+                            cx.stop_propagation();
+                        })
+                } else {
+                    div()
+                })
+                .child(if is_window {
+                    // 最小化（平台级）
+                    div()
+                        .debug_selector(move || minimize_selector.clone())
+                        .cursor(CursorStyle::PointingHand)
+                        .hover(|s| s.opacity(0.7))
+                        .child(Icon::new(IconName::WindowMinimize).small())
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            window.minimize_window();
+                            cx.stop_propagation();
+                        })
+                } else {
+                    div()
+                })
+                .child(if is_window {
+                    // 最大化 / 还原：平台 `zoom` 是切换语义，图标按当前状态显示。
+                    div()
+                        .debug_selector(move || maximize_selector.clone())
+                        .cursor(CursorStyle::PointingHand)
+                        .hover(|s| s.opacity(0.7))
+                        .child(
+                            Icon::new(if maximized {
+                                IconName::WindowRestore
+                            } else {
+                                IconName::WindowMaximize
+                            })
+                            .small(),
+                        )
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            window.zoom_window();
+                            cx.stop_propagation();
+                        })
+                } else {
+                    div()
+                })
+                .child(
+                    div()
+                        .debug_selector(move || close_selector.clone())
+                        .cursor(CursorStyle::PointingHand)
+                        .hover(|s| s.opacity(0.7))
+                        .child(Icon::new(IconName::Close).small())
+                        .on_mouse_down(MouseButton::Left, move |_, window, cx| {
+                            host_for_close.close(window, cx);
+                            cx.stop_propagation();
+                        }),
+                ),
+        );
+
+    if is_window {
+        // 独立窗口：标题栏兼作拖动条（双击切换最大化），与主窗口标题栏一致。
+        // 各按钮的点击处理器都会 stop_propagation，不会误触发拖动。
+        header
+            .cursor(CursorStyle::OpenHand)
+            .on_mouse_down(MouseButton::Left, |event, window, _| {
+                if event.click_count == 2 {
+                    window.zoom_window();
+                } else {
+                    window.start_window_move();
+                }
+            })
+            .into_any_element()
+    } else {
+        header.into_any_element()
+    }
+}
+
+/// 查看/对比内容的正文（弹窗与独立窗口共用）：按 Tab 与记录条数分派。
+#[allow(clippy::too_many_arguments)]
+fn record_view_body(
+    records: &[ExecutionRecord],
+    style: &ManagementStyle,
+    tab: ViewModalTab,
+    show_only_diff: bool,
+    states: &mut HashMap<String, Entity<TextareaState>>,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    if records.len() > 1 {
+        match tab {
+            ViewModalTab::Formatted => {
+                comparison_table(records, style, show_only_diff, states, window, cx)
+                    .into_any_element()
+            }
+            // 多条对比走横向表格（列 = 各记录）。
+            ViewModalTab::Json => {
+                json_comparison_table(records, style, show_only_diff, states, window, cx)
+                    .into_any_element()
+            }
+        }
+    } else {
+        match tab {
+            ViewModalTab::Formatted => {
+                single_record_card(&records[0], style, states, window, cx).into_any_element()
+            }
+            ViewModalTab::Json => {
+                json_tab_view(records, style, states, window, cx).into_any_element()
+            }
+        }
+    }
+}
+
+/// 独立窗口：查看/对比内容的另一种宿主。
+///
+/// 与弹窗共用 [`record_view_header`] / [`record_view_body`]，差别只在数据快照
+/// （打开时拷贝一份，不跟随主界面变化）与关闭行为（关掉整个窗口）。
+pub struct DetachedRecordView {
+    records: Vec<ExecutionRecord>,
+    style: ManagementStyle,
+    tab: ViewModalTab,
+    show_only_diff: bool,
+    scroll: ScrollHandle,
+    /// 正文「只读可选中文本」的状态缓存（key → TextareaState），与弹窗的同名
+    /// 字段互不影响：每个独立窗口有自己的一份。
+    text_states: HashMap<String, Entity<TextareaState>>,
+    window_key: String,
+    parent: WeakEntity<PromptDebugger>,
+    close_hook_registered: bool,
+}
+
+impl DetachedRecordView {
+    fn new(
+        records: Vec<ExecutionRecord>,
+        tab: ViewModalTab,
+        show_only_diff: bool,
+        window_key: String,
+        parent: WeakEntity<PromptDebugger>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            records,
+            style: ManagementStyle::from_theme(cx.theme()),
+            tab,
+            show_only_diff,
+            scroll: ScrollHandle::default(),
+            text_states: HashMap::new(),
+            window_key,
+            parent,
+            close_hook_registered: false,
+        }
+    }
+
+    fn toggle_only_diff(&mut self, cx: &mut Context<Self>) {
+        self.show_only_diff = !self.show_only_diff;
+        cx.notify();
+    }
+
+    /// 从主界面的窗口注册表里摘掉自己（关闭时调用）。
+    fn unregister(&mut self, cx: &mut App) {
+        let key = self.window_key.clone();
+        self.parent
+            .update(cx, |parent, _| {
+                parent.detached_windows.remove(&key);
+            })
+            .ok();
+    }
+}
+
+impl Render for DetachedRecordView {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // 用户点击系统关闭按钮时把注册表里的句柄摘掉。这是 best-effort：
+        // 部分平台/路径不会触发该回调，因此主界面还有 `on_window_closed`
+        // 的全量清理兜底（`prune_detached_windows`）。
+        if !self.close_hook_registered {
+            self.close_hook_registered = true;
+            let parent = self.parent.clone();
+            let key = self.window_key.clone();
+            window.on_window_should_close(cx, move |_, cx| {
+                parent
+                    .update(cx, |parent, _| {
+                        parent.detached_windows.remove(&key);
+                    })
+                    .ok();
+                true
+            });
+        }
+
+        let style = self.style;
+        let host = RecordViewHost::Window(cx.entity());
+        let copy_text = match self.tab {
+            ViewModalTab::Formatted => format_records_for_copy(&self.records),
+            ViewModalTab::Json => format_records_for_json_copy(&self.records),
+        };
+        let scroll = self.scroll.clone();
+
+        div()
+            .debug_selector(|| "PROMPT_DETACHED_ROOT".to_owned())
+            .size_full()
+            .flex()
+            .flex_col()
+            .bg(cx.theme().background)
+            .text_color(cx.theme().foreground)
+            .child(record_view_header(
+                &host,
+                self.records.len(),
+                self.tab,
+                self.show_only_diff,
+                &copy_text,
+                &style,
+                window,
+            ))
+            .child(
+                div()
+                    // `.id()` 把 Div 变成 Stateful<Div>，滚动相关方法
+                    // （overflow_*_scroll / track_scroll）只在 Stateful 上可用。
+                    .id("prompt-detached-body-scroll")
+                    .debug_selector(|| "PROMPT_DETACHED_BODY".to_owned())
+                    .flex()
+                    .flex_col()
+                    .flex_1()
+                    .min_h_0()
+                    .overflow_y_scroll()
+                    .overflow_x_scroll()
+                    .track_scroll(&scroll)
+                    .vertical_scrollbar(&scroll)
+                    .horizontal_scrollbar(&scroll)
+                    // 左侧留白比弹窗更大：窗口可最大化，内容贴左边缘会很局促。
+                    .pl(px(28.0))
+                    .pr(px(16.0))
+                    .py(px(12.0))
+                    .child(record_view_body(
+                        &self.records,
+                        &style,
+                        self.tab,
+                        self.show_only_diff,
+                        &mut self.text_states,
+                        window,
+                        cx,
+                    )),
+            )
+    }
 }
 
 /// 查看弹窗内容 Tab
@@ -3321,11 +4138,9 @@ impl ViewModalTab {
 }
 
 /// 标题栏右侧的「格式化 | JSON」分段切换。
-fn view_modal_tabs(
-    active: ViewModalTab,
-    entity: Entity<PromptDebugger>,
-    style: &ManagementStyle,
-) -> Div {
+fn view_modal_tabs(active: ViewModalTab, host: &RecordViewHost, style: &ManagementStyle) -> Div {
+    let prefix = host.tab_selector_prefix();
+    let host_for_tab = host.clone();
     div()
         .flex()
         .items_center()
@@ -3338,7 +4153,8 @@ fn view_modal_tabs(
                 .into_iter()
                 .map(move |tab| {
                     let is_active = tab == active;
-                    let entity = entity.clone();
+                    let host = host_for_tab.clone();
+                    let prefix = prefix.to_string();
                     let id = match tab {
                         ViewModalTab::Formatted => "prompt-view-tab-formatted",
                         ViewModalTab::Json => "prompt-view-tab-json",
@@ -3347,7 +4163,8 @@ fn view_modal_tabs(
                         .id(SharedString::from(id))
                         .debug_selector(move || {
                             format!(
-                                "PROMPT_VIEW_TAB_{}",
+                                "{}_TAB_{}",
+                                prefix,
                                 if tab == ViewModalTab::Formatted {
                                     "FORMATTED"
                                 } else {
@@ -3372,12 +4189,9 @@ fn view_modal_tabs(
                         .hover(|s| s.text_color(style.list.foreground))
                         .child(tab.label())
                         .on_mouse_down(MouseButton::Left, move |_, _, cx| {
-                            entity.update(cx, |view, cx| {
-                                if view.view_modal_tab != tab {
-                                    view.view_modal_tab = tab;
-                                    cx.notify();
-                                }
-                            });
+                            host.set_tab(tab, cx);
+                            // 独立窗口的标题栏兼作拖动条，切 Tab 不应触发拖动。
+                            cx.stop_propagation();
                         })
                 }),
         )
@@ -3395,7 +4209,7 @@ fn json_comparison_table(
     show_only_diff: bool,
     states: &mut HashMap<String, Entity<TextareaState>>,
     window: &mut Window,
-    cx: &mut Context<PromptDebugger>,
+    cx: &mut App,
 ) -> Div {
     // 列宽与 comparison_table 保持一致（弹窗宽度公式已按「标签列 100 + 每列 300」预留）。
     let label_col_width = px(100.0);
@@ -3460,6 +4274,17 @@ fn json_comparison_table(
         }
 
         let dim_key = json_dimension_key(dim);
+        // 该维度的差异路径集合：供单元格渲染时高亮具体不同的字段。
+        let diff_paths = if dim == "模型" {
+            let first = &records[0].model_name;
+            if records.iter().any(|r| &r.model_name != first) {
+                HashSet::from(["".to_string()])
+            } else {
+                HashSet::new()
+            }
+        } else {
+            json_dimension_diff_paths(records, &sections, dim)
+        };
         let mut row = div()
             .flex()
             .border_b_1()
@@ -3497,6 +4322,7 @@ fn json_comparison_table(
                 record.id,
                 col + 1,
                 &text,
+                &diff_paths,
                 style,
                 states,
                 window,
@@ -3513,21 +4339,45 @@ fn json_comparison_table(
 /// JSON 对比表格的一个数据单元格：等宽只读正文 + 高度上限 + 单元格内独立纵向滚动。
 ///
 /// `col_index` 从 1 开始，仅用于构造唯一的滚动区 id 与调试选择器。
+///
+/// 单元格按行渲染 JSON，并将属于差异路径的行用危险色底色高亮，便于一眼看出
+/// 不同记录之间具体哪个字段不一样。`diff_paths` 的语义见 [`json_diff_paths`]。
 #[allow(clippy::too_many_arguments)]
 fn json_table_cell(
     width: Pixels,
     dim_key: &str,
-    record_id: u64,
+    _record_id: u64,
     col_index: usize,
     text: &str,
+    diff_paths: &HashSet<String>,
     style: &ManagementStyle,
-    states: &mut HashMap<String, Entity<TextareaState>>,
-    window: &mut Window,
-    cx: &mut Context<PromptDebugger>,
+    _states: &mut HashMap<String, Entity<TextareaState>>,
+    _window: &mut Window,
+    _cx: &mut App,
 ) -> Div {
     let panel_selector = format!("PROMPT_VIEW_JSON_CMP_{dim_key}_{col_index}_PANEL");
     let scroll_id = format!("json-cmp-{dim_key}-{col_index}-scroll");
+    let copy_id = format!("json-cmp-{dim_key}-{col_index}-copy");
+
+    // 差异高亮底色：危险色（删除语义）降透明度，叠加在单元格底色之上。
+    let diff = style.action(ActionRole::Delete);
+    let mut diff_bg = diff.background;
+    diff_bg.a = 0.18;
+
+    // 把整段 JSON 拆成带差异标记的行。模型维度是纯字符串，整体比较。
+    let lines: Vec<(String, bool)> = if dim_key == "MODEL" {
+        vec![(text.to_string(), diff_paths.contains(""))]
+    } else {
+        match serde_json::from_str::<serde_json::Value>(text) {
+            Ok(value) => pretty_json_lines(&value, diff_paths),
+            Err(_) => vec![(text.to_string(), false)],
+        }
+    };
+
+    let copy_text = text.to_string();
+
     div()
+        .relative()
         .w(width)
         .flex_shrink_0()
         .px(px(8.0))
@@ -3548,16 +4398,50 @@ fn json_table_cell(
                 // 渲染多个滚动区会共享同一个滚动位置，必须显式给每个单元格独立 id。
                 .id(SharedString::from(scroll_id))
                 .child(
-                    view_selectable_text(
-                        states,
-                        format!("json:cmp:{record_id}:{dim_key}"),
-                        text,
-                        style,
-                        window,
-                        cx,
-                    )
-                    .font_family("monospace"),
+                    div()
+                        .flex()
+                        .flex_col()
+                        .children(
+                            lines
+                                .into_iter()
+                                .map(|(line, marked)| {
+                                    let fg = if marked {
+                                        diff.foreground
+                                    } else {
+                                        style.list.foreground
+                                    };
+                                    div()
+                                        .when(marked, |s| s.bg(diff_bg).rounded(px(3.0)))
+                                        .px(px(2.0))
+                                        .py(px(1.0))
+                                        .child(
+                                            div()
+                                                .font_family("monospace")
+                                                .text_size(px(12.0))
+                                                .text_color(fg)
+                                                .child(line),
+                                        )
+                                        .into_any_element()
+                                })
+                                .collect::<Vec<_>>(),
+                        ),
                 ),
+        )
+        .child(
+            div()
+                .absolute()
+                .top(px(10.0))
+                .right(px(12.0))
+                .id(SharedString::from(copy_id.clone()))
+                .debug_selector(move || copy_id.clone())
+                .cursor(CursorStyle::PointingHand)
+                .hover(|s| s.opacity(0.7))
+                .text_color(style.list.muted_foreground)
+                .child(Icon::new(IconName::Copy).small())
+                .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                    cx.write_to_clipboard(ClipboardItem::new_string(copy_text.clone()));
+                    cx.stop_propagation();
+                }),
         )
 }
 
@@ -3569,7 +4453,7 @@ fn json_tab_view(
     style: &ManagementStyle,
     states: &mut HashMap<String, Entity<TextareaState>>,
     window: &mut Window,
-    cx: &mut Context<PromptDebugger>,
+    cx: &mut App,
 ) -> Div {
     div().flex().flex_col().gap(px(16.0)).children(
         records
@@ -3584,7 +4468,7 @@ fn json_record_group(
     style: &ManagementStyle,
     states: &mut HashMap<String, Entity<TextareaState>>,
     window: &mut Window,
-    cx: &mut Context<PromptDebugger>,
+    cx: &mut App,
 ) -> Div {
     let (input, output, metadata) = record_json_sections(record);
     let base = 1;
@@ -3634,7 +4518,7 @@ fn json_section(
     style: &ManagementStyle,
     states: &mut HashMap<String, Entity<TextareaState>>,
     window: &mut Window,
-    cx: &mut Context<PromptDebugger>,
+    cx: &mut App,
 ) -> Div {
     let copy_text = text.to_string();
     let copy_id = format!("{base}_COPY");
@@ -5801,6 +6685,220 @@ mod geometry_tests {
                 .expect("read context menu state"),
             "删除后右键菜单应关闭"
         );
+    }
+
+    fn detached_fixture_record(id: u64, model: &str, result: &str) -> ExecutionRecord {
+        ExecutionRecord {
+            id,
+            timestamp: id,
+            model_name: model.to_string(),
+            temperature: 0.7,
+            max_tokens: 2048,
+            top_p: 1.0,
+            thinking_enabled: false,
+            thinking_budget: 1024,
+            messages: vec![DebugMessage {
+                id: 1,
+                role: MessageRole::User,
+                content: format!("prompt {id}"),
+            }],
+            tools: vec![],
+            result: CallState::Success(result.to_string()),
+        }
+    }
+
+    #[test]
+    fn detached_window_key_ignores_selection_order() {
+        let a = PromptDebugger::detached_window_key(&[
+            detached_fixture_record(2, "m", "r"),
+            detached_fixture_record(1, "m", "r"),
+        ]);
+        let b = PromptDebugger::detached_window_key(&[
+            detached_fixture_record(1, "m", "r"),
+            detached_fixture_record(2, "m", "r"),
+        ]);
+        assert_eq!(a, "cmp:1,2");
+        // 同一组记录（勾选顺序不同）必须落到同一个键上。
+        assert_eq!(a, b);
+        assert_eq!(
+            PromptDebugger::detached_window_key(&[detached_fixture_record(7, "m", "r")]),
+            "rec:7"
+        );
+        assert_eq!(
+            PromptDebugger::detached_window_key_ids("cmp:1,2"),
+            vec![1, 2]
+        );
+        assert_eq!(PromptDebugger::detached_window_key_ids("rec:9"), vec![9]);
+    }
+
+    #[gpui_kit::test]
+    fn history_view_modal_detach_button_opens_one_detached_window(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        let _runtime_guard = runtime.enter();
+        let store = cx.new(|_| store);
+
+        let records = vec![
+            detached_fixture_record(7, "first-model", "first result"),
+            detached_fixture_record(8, "second-model", "second result"),
+        ];
+        let records_for_view = records.clone();
+        let window = cx.open_window(size(px(1200.0), px(700.0)), move |_, cx| {
+            let mut view = PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone());
+            view.loaded = true;
+            view.view_records = records_for_view;
+            view.show_view_modal = true;
+            view
+        });
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let app_cx = cx.clone();
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        let detach = cx
+            .debug_bounds("PROMPT_HISTORY_VIEW_DETACH")
+            .expect("detach button bounds");
+        cx.simulate_click(detach.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        let (modal_open, detached) = typed_window
+            .update(&mut cx, |view, _, _| {
+                (view.show_view_modal, view.detached_windows.len())
+            })
+            .expect("read state after detach");
+        assert!(!modal_open, "转成独立窗口后弹窗应关闭");
+        assert_eq!(detached, 1, "应打开一个独立窗口");
+        assert!(
+            cx.debug_bounds("PROMPT_HISTORY_VIEW_MODAL").is_none(),
+            "弹窗应消失"
+        );
+
+        // 独立窗口里渲染的是同一套内容。
+        let handle = typed_window
+            .update(&mut cx, |view, _, _| {
+                view.detached_windows.values().next().cloned()
+            })
+            .expect("read detached handles")
+            .expect("one detached window");
+        let mut detached_cx = VisualTestContext::from_window(handle.into(), &app_cx);
+        detached_cx.run_until_parked();
+        assert!(
+            detached_cx.debug_bounds("PROMPT_DETACHED_BODY").is_some(),
+            "独立窗口应渲染正文"
+        );
+        assert!(
+            detached_cx.debug_bounds("PROMPT_DETACHED_CLOSE").is_some(),
+            "独立窗口应有关闭按钮"
+        );
+        assert!(
+            detached_cx.debug_bounds("PROMPT_DETACHED_DETACH").is_none(),
+            "独立窗口里不应再出现「独立窗口」按钮"
+        );
+        // 独立窗口要有最小化 / 最大化按钮，弹窗则没有窗口级控制。
+        assert!(
+            detached_cx
+                .debug_bounds("PROMPT_DETACHED_MINIMIZE")
+                .is_some(),
+            "独立窗口应有最小化按钮"
+        );
+        assert!(
+            detached_cx
+                .debug_bounds("PROMPT_DETACHED_MAXIMIZE")
+                .is_some(),
+            "独立窗口应有最大化按钮"
+        );
+        assert!(
+            cx.debug_bounds("PROMPT_HISTORY_VIEW_MINIMIZE").is_none(),
+            "弹窗不应出现窗口级控制按钮"
+        );
+
+        // 同一组记录再次打开：复用已有窗口，不新增。
+        typed_window
+            .update(&mut cx, |view, _, cx| {
+                view.open_detached_window(records.clone(), ViewModalTab::Formatted, false, cx);
+            })
+            .expect("reopen the same record group");
+        cx.run_until_parked();
+        assert_eq!(
+            typed_window
+                .update(&mut cx, |view, _, _| view.detached_windows.len())
+                .expect("read detached count"),
+            1,
+            "同一组记录只应有一个独立窗口"
+        );
+    }
+
+    #[gpui_kit::test]
+    fn comparison_and_view_open_detached_window_when_config_enabled(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
+        });
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        let _runtime_guard = runtime.enter();
+        let store = cx.new(|_| store);
+
+        let window = cx.open_window(size(px(1200.0), px(700.0)), move |_, cx| {
+            let mut view = PromptDebugger::new_unloaded(cx, store.clone(), llm_store.clone());
+            view.loaded = true;
+            view.detached_comparison = true;
+            view.detached_record_view = true;
+            view.execution_history = vec![
+                detached_fixture_record(1, "first-model", "first result"),
+                detached_fixture_record(2, "second-model", "second result"),
+            ];
+            view
+        });
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        // 对比：配置打开时直接进独立窗口，不弹窗。
+        typed_window
+            .update(&mut cx, |view, _, cx| {
+                view.toggle_record_selection(1);
+                view.toggle_record_selection(2);
+                view.start_comparison(cx);
+            })
+            .expect("start comparison");
+        cx.run_until_parked();
+        let (modal_open, detached) = typed_window
+            .update(&mut cx, |view, _, _| {
+                (view.show_view_modal, view.detached_windows.len())
+            })
+            .expect("read state after comparison");
+        assert!(!modal_open, "配置开启时对比不应弹窗");
+        assert_eq!(detached, 1, "对比应打开一个独立窗口");
+
+        // 查看单条：配置打开时同样直接进独立窗口。
+        typed_window
+            .update(&mut cx, |view, _, cx| view.open_view_record(1, cx))
+            .expect("open view record");
+        cx.run_until_parked();
+        let (modal_open, detached) = typed_window
+            .update(&mut cx, |view, _, _| {
+                (view.show_view_modal, view.detached_windows.len())
+            })
+            .expect("read state after view record");
+        assert!(!modal_open, "配置开启时查看记录不应弹窗");
+        assert_eq!(detached, 2, "不同的记录组各自一个独立窗口");
     }
 }
 

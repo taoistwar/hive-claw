@@ -1,21 +1,25 @@
 use gpui_kit::component::{
-    ActiveTheme as _,
+    ActiveTheme as _, Icon, Sizable,
     theme::{self, Theme, ThemeRegistry},
+    tooltip::Tooltip,
 };
+use gpui_kit_assets::IconName;
 use gpui_kit::{
-    App, Bounds, Context, CursorStyle, Entity, Hsla, MouseButton, SharedString, Window,
-    WindowBounds, WindowDecorations, WindowOptions, div, prelude::*, px, size,
+    App, Bounds, Context, CursorStyle, Entity, Hsla, MouseButton, SharedString, TitlebarOptions,
+    Window, WindowBounds, WindowDecorations, WindowOptions, div, prelude::*, px, size,
 };
 use std::{path::Path, sync::Arc};
 
 use crate::agent::local_agent::LocalAgentRuntime;
-use crate::config::Config;
+use crate::config::{AppIdentity, Config};
 use crate::datasource::{Store, StoreOpenOptions, backup::RestoreCoordinator};
+use crate::datasource::llm_store::LlmStore;
 use crate::runtime::diagnostics::ExecutionEventCollector;
 use crate::runtime::{FoundationRuntimeComposition, LocalExecutionAdapter};
 use crate::ui::{
-    ai_view::AiView, home::HomeView, sidebar_nav::SidebarNav, theme_contrast,
-    utility_view::UtilityView,
+    ai_view::AiView, category_view::CategoryView, global_config::GlobalConfigView,
+    home::HomeView, llm_config::LLMConfigView, prompt_debugger::PromptDebugger,
+    sidebar_nav::SidebarNav, theme_contrast, utility_view::UtilityView,
 };
 
 /// Error returned when navigation cannot proceed.
@@ -256,13 +260,14 @@ pub async fn open_store_after_restore_recovery(root: &Path) -> anyhow::Result<St
     Ok(Store::open_local(StoreOpenOptions::for_root(root)).await?)
 }
 
-pub fn run(config: Config) -> anyhow::Result<()> {
-    let cfg = Arc::new(config);
-
-    let default_root = Store::default_db_path();
-    let store = tokio::runtime::Handle::current()
-        .block_on(open_store_after_restore_recovery(&default_root))?;
-    let app = gpui_kit::application().with_assets(gpui_kit_assets::Assets);
+/// Open the owner-aware local [`Store`] for `root`, replay interrupted plugin
+/// operations and drain artifact GC, then migrate the LLM tables.
+///
+/// Both HiveGUI entry points share this exact bootstrap so the Store/LlmStore
+/// wiring cannot drift between the full desktop app ([`run`]) and the focused
+/// prompt-engineering binary ([`run_prompt_studio`]).
+pub async fn bootstrap_stores(root: &Path) -> anyhow::Result<(Store, LlmStore)> {
+    let store = open_store_after_restore_recovery(root).await?;
 
     // T079 ③ startup replay: recover any plugin install operation interrupted
     // by a crash, then drain pending artifact GC so orphaned staging bytes and
@@ -271,31 +276,38 @@ pub fn run(config: Config) -> anyhow::Result<()> {
         store.pool().clone(),
         store.plugin_root().to_path_buf(),
     ) {
-        tokio::runtime::Handle::current().block_on(async {
-            match plugin_store.recover_interrupted_operations().await {
-                Ok(n) if n > 0 => {
-                    tracing::info!(recovered = n, "replayed interrupted plugin operations")
-                }
-                Ok(_) => {}
-                Err(e) => tracing::warn!(error = %e, "plugin operation recovery failed"),
+        match plugin_store.recover_interrupted_operations().await {
+            Ok(n) if n > 0 => {
+                tracing::info!(recovered = n, "replayed interrupted plugin operations")
             }
-            match plugin_store.drain_pending_gc().await {
-                Ok(n) if n > 0 => tracing::info!(drained = n, "drained pending plugin artifact GC"),
-                Ok(_) => {}
-                Err(e) => tracing::warn!(error = %e, "plugin artifact GC drain failed"),
-            }
-        });
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "plugin operation recovery failed"),
+        }
+        match plugin_store.drain_pending_gc().await {
+            Ok(n) if n > 0 => tracing::info!(drained = n, "drained pending plugin artifact GC"),
+            Ok(_) => {}
+            Err(e) => tracing::warn!(error = %e, "plugin artifact GC drain failed"),
+        }
     }
 
     // Init LLM tables before app.run (avoids blocking UI thread)
     let llm_store = {
-        let s = crate::datasource::llm_store::LlmStore::new(
-            store.pool().clone(),
-            store.crypto().clone(),
-        );
-        tokio::runtime::Handle::current().block_on(s.migrate()).ok();
+        let s = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        s.migrate().await.ok();
         s
     };
+
+    Ok((store, llm_store))
+}
+
+pub fn run(config: Config) -> anyhow::Result<()> {
+    let cfg = Arc::new(config);
+
+    // Shared bootstrap: open the Store, replay plugin recovery + artifact GC,
+    // and migrate the LLM tables.
+    let (store, llm_store) =
+        tokio::runtime::Handle::current().block_on(bootstrap_stores(&Store::default_db_path()))?;
+    let app = gpui_kit::application().with_assets(gpui_kit_assets::Assets);
 
     // Foundation runtime composition: build the local-execution
     // composition through the factory so the runtime boundary is the
@@ -364,6 +376,292 @@ pub fn run(config: Config) -> anyhow::Result<()> {
         cx.activate(true);
     });
     Ok(())
+}
+
+/// A prompt-engineering navigation destination: stable id (used for the
+/// element id), the tooltip/status-bar label, and the sidebar icon.
+///
+/// The rail is icon-only (matching the main HiveGUI sidebar), so the label is
+/// surfaced through a hover tooltip, the status bar, and the AccessKit name
+/// rather than as visible text.
+struct PromptStudioSection {
+    id: &'static str,
+    label: &'static str,
+    icon: IconName,
+}
+
+/// Sections surfaced by the focused prompt-engineering application, in
+/// navigation order.
+const PROMPT_STUDIO_SECTIONS: &[PromptStudioSection] = &[
+    PromptStudioSection {
+        id: "prompt",
+        label: "提示词调试",
+        icon: IconName::FlaskConical,
+    },
+    PromptStudioSection {
+        id: "llm",
+        label: "LLM 配置",
+        icon: IconName::BrainCircuit,
+    },
+    PromptStudioSection {
+        id: "global",
+        label: "全局配置",
+        icon: IconName::Cog,
+    },
+    PromptStudioSection {
+        id: "category",
+        label: "分类管理",
+        icon: IconName::FolderTree,
+    },
+];
+
+/// Focused prompt-engineering application: LLM prompt debugger, LLM config
+/// (Model / Preset / Provider), global configuration, and category management.
+///
+/// It reuses the same Store / LlmStore bootstrap as [`run`] but wires a
+/// narrower shell so the prompt-engineering surfaces are the only navigation
+/// targets. The four views do not depend on `HiveGuiAppState`, so no
+/// desktop-wide global is installed here.
+///
+/// Unlike [`run`], the prompt studio opens its **own** data root
+/// ([`Store::prompt_studio_db_path`]) rather than
+/// [`Store::default_db_path`]: the two Agents keep independent databases, and
+/// the exclusive owner lock on `{root}/datasources.db.lock` no longer stops
+/// both binaries from running at the same time.
+pub fn run_prompt_studio(_config: Config) -> anyhow::Result<()> {
+    let (store, llm_store) = tokio::runtime::Handle::current()
+        .block_on(bootstrap_stores(&Store::prompt_studio_db_path()))?;
+    // The icon rail uses names outside gpui-component's default icon bundle
+    // (`default-icons.txt`), so this entry point registers the full Lucide
+    // catalog instead. `Assets` only embeds that default subset and would make
+    // any other icon silently render blank.
+    let app = gpui_kit::application().with_assets(gpui_kit_assets::AllAssets);
+
+    app.run(move |cx: &mut App| {
+        theme::init(cx);
+        gpui_kit::component::init(cx);
+        theme_contrast::install(cx);
+
+        // Load custom themes
+        let themes_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("themes");
+        if let Err(e) = ThemeRegistry::watch_dir(themes_dir, cx, |_| {}) {
+            tracing::warn!("Failed to watch themes directory: {}", e);
+        }
+
+        let store = cx.new(|_| store);
+        let llm_store = llm_store.clone();
+        let b = Bounds::centered(None, size(px(1200.0), px(800.0)), cx);
+        cx.open_window(
+            WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(b)),
+                window_decorations: Some(WindowDecorations::Server),
+                // OS-level window title (WM_NAME / xdg toplevel title), so the
+                // taskbar and window list show the product name instead of the
+                // executable name. Mirrors the in-app titlebar brand.
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Ngy Prompt Studio".into()),
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+            move |window, cx| {
+                let inner = cx.new(|cx| PromptStudioRoot::new(cx, store.clone(), llm_store.clone()));
+                cx.new(|cx| gpui_kit::component::Root::new(inner, window, cx))
+            },
+        )
+        .expect("window should open");
+        cx.activate(true);
+    });
+    Ok(())
+}
+
+/// Root view for the prompt-engineering application. An icon-only navigation
+/// rail (matching the main HiveGUI sidebar) selects which section the body
+/// renders.
+pub struct PromptStudioRoot {
+    active: usize,
+    prompt_debugger: Entity<PromptDebugger>,
+    llm_config: Entity<LLMConfigView>,
+    global_config: Entity<GlobalConfigView>,
+    category_view: Entity<CategoryView>,
+}
+
+impl PromptStudioRoot {
+    pub fn new(cx: &mut Context<Self>, store: Entity<Store>, llm_store: LlmStore) -> Self {
+        // The prompt studio reads/writes its own execution history file under
+        // its data root instead of the desktop app's.
+        let prompt_debugger = cx.new(|cx| {
+            PromptDebugger::new(
+                cx,
+                store.clone(),
+                llm_store.clone(),
+                AppIdentity::NGY_PROMPT_STUDIO,
+            )
+        });
+        let llm_config = cx.new(|cx| {
+            let mut view = LLMConfigView::new(cx);
+            view.llm_store = Some(llm_store);
+            view
+        });
+        let global_config = cx.new(|cx| {
+            let mut view = GlobalConfigView::new(cx);
+            view.store = Some(store.read(cx).clone());
+            // The prompt studio writes `ngy_prompt_studio.log`, so the
+            // operator-facing copy must name that file instead of the desktop
+            // app's `hivegui.log`.
+            view.identity = AppIdentity::NGY_PROMPT_STUDIO;
+            view
+        });
+        let category_view = cx.new(|cx| CategoryView::new(store.clone(), cx));
+        Self {
+            active: 0,
+            prompt_debugger,
+            llm_config,
+            global_config,
+            category_view,
+        }
+    }
+}
+
+impl Render for PromptStudioRoot {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let colors = shell_theme_colors(cx.theme());
+        let sidebar_background = cx.theme().sidebar;
+        let sidebar_accent = cx.theme().sidebar_accent;
+        let sidebar_foreground = cx.theme().sidebar_foreground;
+
+        // Icon-only navigation rail: 48px wide, 40x40 icon buttons with hover
+        // tooltips. Mirrors `SidebarNav` so the two apps read the same way.
+        let sidebar = div()
+            .id("ps-sidebar")
+            .w(px(48.0))
+            .h_full()
+            .flex_shrink_0()
+            .flex()
+            .flex_col()
+            .items_center()
+            .gap(px(8.0))
+            .bg(sidebar_background)
+            .text_color(sidebar_foreground)
+            .py(px(12.0))
+            .children(PROMPT_STUDIO_SECTIONS.iter().enumerate().map(
+                |(index, section)| {
+                    let selected = self.active == index;
+                    let label = SharedString::from(section.label);
+                    let label_for_a11y = label.clone();
+                    div()
+                        .id(SharedString::from(format!("ps-nav-{}", section.id)))
+                        .w(px(40.0))
+                        .h(px(40.0))
+                        .flex_shrink_0()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded(px(8.0))
+                        .cursor(CursorStyle::PointingHand)
+                        .bg(if selected {
+                            sidebar_accent
+                        } else {
+                            sidebar_background
+                        })
+                        .hover(move |style| style.bg(sidebar_accent))
+                        .role(gpui_kit::accesskit::Role::Button)
+                        .aria_label(label_for_a11y)
+                        .on_click(cx.listener(move |this, _, _, cx| {
+                            this.active = index;
+                            cx.notify();
+                        }))
+                        .child(
+                            div()
+                                .flex()
+                                .items_center()
+                                .justify_center()
+                                .child(
+                                    Icon::new(section.icon)
+                                        .large()
+                                        .text_color(sidebar_foreground),
+                                ),
+                        )
+                        .tooltip(move |window, cx| {
+                            Tooltip::new(label.clone()).build(window, cx)
+                        })
+                },
+            ));
+
+        let body = match self.active {
+            0 => self.prompt_debugger.clone().into_any_element(),
+            1 => self.llm_config.clone().into_any_element(),
+            2 => self.global_config.clone().into_any_element(),
+            3 => self.category_view.clone().into_any_element(),
+            _ => div().into_any_element(),
+        };
+
+        let titlebar = div()
+            .id("ps-titlebar")
+            .h(px(36.0))
+            .flex()
+            .flex_row()
+            .items_center()
+            .px(px(8.0))
+            .bg(colors.title_bar)
+            .border_b_1()
+            .border_color(colors.title_bar_border)
+            .text_color(colors.foreground)
+            .child(
+                div()
+                    .text_size(px(14.0))
+                    .font_weight(gpui_kit::FontWeight::BOLD)
+                    .child("Ngy 提示词工程 · Ngy Prompt Studio"),
+            );
+
+        let statusbar = div()
+            .id("ps-statusbar")
+            .h(px(24.0))
+            .flex()
+            .items_center()
+            .bg(colors.status_bar)
+            .border_t_1()
+            .border_color(colors.status_bar_border)
+            .child(
+                div()
+                    .px(px(12.0))
+                    .text_size(px(12.0))
+                    .text_color(colors.foreground)
+                    .child(format!(
+                        "当前页面：{}",
+                        PROMPT_STUDIO_SECTIONS[self.active].label
+                    )),
+            );
+
+        div()
+            .relative()
+            .size_full()
+            .flex()
+            .flex_col()
+            .border_b_2()
+            .border_color(colors.window_border)
+            .bg(colors.background)
+            .text_color(colors.foreground)
+            .child(titlebar)
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .flex_1()
+                    .min_h_0()
+                    .child(sidebar)
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_1()
+                            .min_w_0()
+                            .h_full()
+                            .child(body),
+                    ),
+            )
+            .child(statusbar)
+    }
 }
 
 pub struct RootView {

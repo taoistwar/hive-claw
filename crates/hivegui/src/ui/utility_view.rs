@@ -1,5 +1,6 @@
 //! 工具视图 - 包含 LLM 提示词调试和数据源等桌面辅助工具。
 
+use crate::config::AppIdentity;
 use crate::datasource::Store;
 use crate::datasource::llm_store::LlmStore;
 use crate::ui::datasource_view::DataSourceView;
@@ -22,7 +23,8 @@ impl UtilityView {
     pub fn new(cx: &mut Context<Self>, store: Entity<Store>, llm_store: LlmStore) -> Self {
         Self {
             active_tab: 0,
-            prompt_debugger: cx.new(|cx| PromptDebugger::new(cx, store.clone(), llm_store)),
+            prompt_debugger: cx
+                .new(|cx| PromptDebugger::new(cx, store.clone(), llm_store, AppIdentity::HIVEGUI)),
             datasource_view: cx.new(|cx| DataSourceView::new(store, cx)),
         }
     }

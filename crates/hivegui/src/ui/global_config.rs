@@ -7,6 +7,7 @@
 //! that opened the modal on close. The keyboard layer subscribes to
 //! `Tab` / `Shift+Tab` / `Enter` / `Esc` so every CRUD operation is
 //! reachable without a pointing device.
+use crate::config::AppIdentity;
 use crate::datasource::{GlobalConfig, Store};
 use crate::ui::management_style::{
     ActionRole, ActionSize, ManagementStyle, action_button, list_actions, list_cell,
@@ -26,15 +27,20 @@ const CONFIG_TYPES: &[&str] = &["text", "number", "json", "boolean"];
 /// Build the user-visible message that the GlobalConfig form surfaces
 /// when a save fails. Operators see this in the modal; the matching
 /// structured tracing event in `save_config` carries the full error
-/// chain into `hivegui.log` so the message stays short while the log
-/// keeps everything searchable.
-fn format_save_error(outcome: &str, is_update: bool) -> String {
+/// chain into the application's rotating log file so the message stays
+/// short while the log keeps everything searchable.
+///
+/// The log file name comes from `identity` because this view is hosted by
+/// both HiveGUI entry points, which write different log files.
+fn format_save_error(outcome: &str, is_update: bool, identity: AppIdentity) -> String {
     let op = if is_update { "更新" } else { "添加" };
-    let detail = match outcome {
-        "ok" => return "保存成功".to_string(),
-        _ => "请查看 hivegui.log 获取错误详情（目标 hivegui::ui::global_config）",
-    };
-    format!("{op}配置失败：{detail}")
+    if outcome == "ok" {
+        return "保存成功".to_string();
+    }
+    format!(
+        "{op}配置失败：请查看 {} 获取错误详情（目标 hivegui::ui::global_config）",
+        identity.log_file()
+    )
 }
 
 /// Stable selector for the GlobalConfig modal layer used by the
@@ -95,6 +101,12 @@ fn convert_config_value(value: &str, source_type: &str, target_type: &str) -> St
 
 pub struct GlobalConfigView {
     pub store: Option<Store>,
+    /// Application hosting this view. It selects the log file named in the
+    /// operator-facing error copy, because the desktop app and Ngy Prompt
+    /// Studio write different log files. Defaults to
+    /// [`AppIdentity::HIVEGUI`]; the prompt-engineering entry point overrides
+    /// it when it builds the view.
+    pub identity: AppIdentity,
     items: Vec<GlobalConfig>,
     total: i64,
     page: i64,
@@ -130,6 +142,7 @@ impl GlobalConfigView {
     pub fn new(cx: &mut Context<Self>) -> Self {
         GlobalConfigView {
             store: None,
+            identity: AppIdentity::HIVEGUI,
             items: vec![],
             total: 0,
             page: 1,
@@ -321,7 +334,8 @@ impl GlobalConfigView {
                         this.error = None;
                         this.reload(cx);
                     } else {
-                        this.error = Some(format_save_error("error", is_update).into());
+                        this.error =
+                            Some(format_save_error("error", is_update, this.identity).into());
                         cx.notify();
                     }
                 });
@@ -830,7 +844,13 @@ impl GlobalConfigView {
                         "删除全局配置失败"
                     );
                     this.update(cx, |view, cx| {
-                        view.error = Some("删除全局配置失败，详情见 hivegui.log".into());
+                        view.error = Some(
+                            format!(
+                                "删除全局配置失败，详情见 {}",
+                                view.identity.log_file()
+                            )
+                            .into(),
+                        );
                         cx.notify();
                     })
                     .ok();
@@ -1266,7 +1286,27 @@ fn deletable_radio(
 
 #[cfg(test)]
 mod tests {
-    use super::{convert_config_value, single_line_preview};
+    use super::{AppIdentity, convert_config_value, format_save_error, single_line_preview};
+
+    /// The save-failure copy must name the log file its hosting application
+    /// actually writes: `hivegui.log` for the desktop app, or
+    /// `ngy_prompt_studio.log` for Ngy Prompt Studio. This view is shared by
+    /// both entry points, so a hard-coded name is always wrong for one of them.
+    #[test]
+    fn save_error_names_the_hosting_application_log_file() {
+        let desktop = format_save_error("error", false, AppIdentity::HIVEGUI);
+        assert!(desktop.contains("hivegui.log"), "{desktop}");
+        assert!(!desktop.contains("ngy_prompt_studio.log"), "{desktop}");
+
+        let studio = format_save_error("error", true, AppIdentity::NGY_PROMPT_STUDIO);
+        assert!(studio.contains("ngy_prompt_studio.log"), "{studio}");
+        assert!(!studio.contains("hivegui.log"), "{studio}");
+
+        assert_eq!(
+            format_save_error("ok", false, AppIdentity::NGY_PROMPT_STUDIO),
+            "保存成功"
+        );
+    }
 
     /// In-memory tracing layer used by the `save_config` regression
     /// tests. It records every event so tests can assert that the

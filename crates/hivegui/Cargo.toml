@@ -18,6 +18,10 @@ debug = true
 name = "hivegui"
 path = "src/main.rs"
 
+[[bin]]
+name = "ngy_prompt_studio"
+path = "src/bin/ngy_prompt_studio.rs"
+
 [[bench]]
 name = "local_runtime"
 path = "benches/local_runtime.rs"
@@ -41,7 +45,6 @@ serde_json = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = { workspace = true }
 tracing-appender = { workspace = true }
-directories = { workspace = true }
 chrono = { workspace = true }
 thiserror = { workspace = true }
 anyhow = { workspace = true }

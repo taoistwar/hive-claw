@@ -16,5 +16,6 @@ pub mod logging_v1;
 pub mod model;
 pub mod plugin;
 pub mod runtime;
+pub mod startup;
 pub mod ui;
 pub mod version;

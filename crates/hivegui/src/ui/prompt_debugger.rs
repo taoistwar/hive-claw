@@ -1,5 +1,6 @@
 //! LLM 提示词调试工具 — 三栏布局：LLM 设置 / 消息编辑 / 结果展示。
 
+use crate::config::AppIdentity;
 use crate::datasource::entity_store::Tool as DbTool;
 use crate::datasource::llm_store::{LlmModel, LlmPreset, LlmProvider, LlmStore};
 use crate::datasource::{Crypto, Store};
@@ -204,6 +205,8 @@ pub struct PromptDebugger {
     store: Entity<Store>,
     llm_store: LlmStore,
     crypto: Crypto,
+    /// 承载本视图的 HiveGUI 应用身份，决定调试历史文件落在哪个数据根目录下。
+    identity: AppIdentity,
     // 左侧：LLM 设置
     presets: Vec<LlmPreset>,
     models: Vec<LlmModel>,
@@ -301,8 +304,19 @@ pub struct PromptDebugger {
 }
 
 impl PromptDebugger {
-    pub fn new(cx: &mut Context<Self>, store: Entity<Store>, llm_store: LlmStore) -> Self {
+    /// 构造提示词调试视图。
+    ///
+    /// `identity` 是承载本视图的 HiveGUI 应用：桌面版与 Prompt Studio 各自持有
+    /// 独立的调试历史文件，必须在首次 `load_history` 之前确定，否则会读到另一个
+    /// 应用的历史。
+    pub fn new(
+        cx: &mut Context<Self>,
+        store: Entity<Store>,
+        llm_store: LlmStore,
+        identity: AppIdentity,
+    ) -> Self {
         let mut this = Self::new_unloaded(cx, store, llm_store);
+        this.identity = identity;
         let weak = cx.weak_entity();
         // 回调带回被关闭窗口的 id，按 id 精确剔除句柄（不必全量探测）。
         this._detached_window_closed = Some(cx.on_window_closed(move |cx, window_id| {
@@ -332,6 +346,9 @@ impl PromptDebugger {
             store,
             llm_store,
             crypto,
+            // 测试/无宿主路径使用桌面版身份；真实入口由 `new` 覆盖，
+            // 且单元测试下 `history_file_path` 会改写到临时目录。
+            identity: AppIdentity::HIVEGUI,
             presets: vec![],
             models: vec![],
             providers: vec![],
@@ -906,20 +923,92 @@ impl PromptDebugger {
 
     /// 获取历史文件路径
     ///
+    /// 每个 HiveGUI 应用各有一份，放在**自己的数据根目录**下（桌面版
+    /// `{data_local_dir}/hivegui`，Prompt Studio `{data_local_dir}/ngy_prompt_studio`），
+    /// 这样两个应用同时运行也不会互相覆盖调试历史。
+    ///
     /// 单元测试下改写到临时目录，避免测试覆盖真实的历史记录文件。
-    fn history_file_path() -> PathBuf {
+    fn history_file_path(&self) -> PathBuf {
         if cfg!(test) {
             return std::env::temp_dir().join("hivegui-prompt-debug-history-test.json");
         }
-        let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-        PathBuf::from(home)
-            .join(".hiveclaw")
-            .join("prompt_debug_history.json")
+        Self::history_file_path_for(self.identity)
+    }
+
+    /// 给定应用身份的历史文件路径（不含测试改写，便于断言路径契约）。
+    fn history_file_path_for(identity: AppIdentity) -> PathBuf {
+        identity.data_root().join("prompt_debug_history.json")
+    }
+
+    /// 旧版共享历史文件路径：`$HOME/.hiveclaw/prompt_debug_history.json`。
+    ///
+    /// 旧版把执行历史写在这里，桌面版与 Prompt Studio 共用同一个文件。
+    fn legacy_history_file_path() -> Option<PathBuf> {
+        let home = std::env::var_os("HOME")?;
+        Some(
+            PathBuf::from(home)
+                .join(".hiveclaw")
+                .join("prompt_debug_history.json"),
+        )
+    }
+
+    /// 首次读取前把旧版共享历史「复制一次」到本应用的数据根目录下。
+    ///
+    /// 只在目标文件尚不存在、且旧文件存在时执行；旧文件保留在原处（另一个应用
+    /// 首次运行时会各自接管一份），此后两个应用各写各的，互不干扰。
+    fn adopt_legacy_history(&self) {
+        // 单元测试用临时文件，且不应读取真实 HOME。
+        if cfg!(test) {
+            return;
+        }
+        let target = self.history_file_path();
+        if target.exists() {
+            return;
+        }
+        let Some(legacy) = Self::legacy_history_file_path() else {
+            return;
+        };
+        if !legacy.exists() {
+            return;
+        }
+        if let Some(parent) = target.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            tracing::warn!(
+                target: "hivegui::ui::prompt_debugger",
+                operation = "adopt_legacy_history",
+                outcome = "error",
+                path = %parent.display(),
+                error = %error,
+                "创建数据根目录失败，跳过旧版调试历史接管"
+            );
+            return;
+        }
+        match std::fs::copy(&legacy, &target) {
+            Ok(_) => tracing::info!(
+                target: "hivegui::ui::prompt_debugger",
+                operation = "adopt_legacy_history",
+                outcome = "ok",
+                from = %legacy.display(),
+                to = %target.display(),
+                "已把旧版共享调试历史接管到本应用数据根目录"
+            ),
+            Err(error) => tracing::warn!(
+                target: "hivegui::ui::prompt_debugger",
+                operation = "adopt_legacy_history",
+                outcome = "error",
+                from = %legacy.display(),
+                to = %target.display(),
+                error = %error,
+                "接管旧版调试历史失败"
+            ),
+        }
     }
 
     /// 加载历史记录
     fn load_history(&mut self) {
-        let path = Self::history_file_path();
+        self.adopt_legacy_history();
+        let path = self.history_file_path();
         if let Ok(content) = std::fs::read_to_string(&path)
             && let Ok(records) = serde_json::from_str::<Vec<ExecutionRecord>>(&content)
         {
@@ -936,7 +1025,7 @@ impl PromptDebugger {
 
     /// 保存历史记录
     fn save_history(&self) {
-        let path = Self::history_file_path();
+        let path = self.history_file_path();
         if let Some(parent) = path.parent() {
             let _ = std::fs::create_dir_all(parent);
         }
@@ -6960,5 +7049,52 @@ mod error_chain_tests {
         };
         assert_eq!(error_chain_for_log(&error), "boom");
         assert_eq!(root_cause_for_log(&error), "boom");
+    }
+}
+
+#[cfg(test)]
+mod history_path_tests {
+    use super::{AppIdentity, PromptDebugger};
+
+    /// 调试历史必须落在**承载视图的那个应用**的数据根目录下：桌面版与
+    /// Prompt Studio 共用同一个文件时，两个进程同时运行会互相覆盖。
+    #[test]
+    fn history_file_is_scoped_to_the_application_data_root() {
+        let desktop = PromptDebugger::history_file_path_for(AppIdentity::HIVEGUI);
+        let studio = PromptDebugger::history_file_path_for(AppIdentity::NGY_PROMPT_STUDIO);
+
+        assert_eq!(
+            desktop,
+            AppIdentity::HIVEGUI.data_root().join("prompt_debug_history.json")
+        );
+        assert_eq!(
+            studio,
+            AppIdentity::NGY_PROMPT_STUDIO
+                .data_root()
+                .join("prompt_debug_history.json")
+        );
+        assert_ne!(desktop, studio);
+    }
+
+    /// 旧版共享位置必须与两个新位置都不同，否则「接管」会自己覆盖自己。
+    #[test]
+    fn legacy_shared_history_path_differs_from_per_app_paths() {
+        let Some(legacy) = PromptDebugger::legacy_history_file_path() else {
+            // 没有 HOME（异常环境）时不做断言。
+            return;
+        };
+        assert!(
+            legacy.ends_with(".hiveclaw/prompt_debug_history.json"),
+            "unexpected legacy path: {}",
+            legacy.display()
+        );
+        assert_ne!(
+            legacy,
+            PromptDebugger::history_file_path_for(AppIdentity::HIVEGUI)
+        );
+        assert_ne!(
+            legacy,
+            PromptDebugger::history_file_path_for(AppIdentity::NGY_PROMPT_STUDIO)
+        );
     }
 }

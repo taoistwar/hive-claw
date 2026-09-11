@@ -10,10 +10,11 @@ use std::str::FromStr;
 use std::sync::Arc;
 use std::time::Duration;
 use thiserror::Error;
-
 use super::crypto::Crypto;
+
 use super::models::DataSource;
 use super::query_count::QueryCountObserver;
+use crate::config::AppIdentity;
 
 const DB_FILENAME: &str = "datasources.db";
 const KEY_SIZE: usize = 32;
@@ -2061,10 +2062,28 @@ impl Store {
         self.inner.crypto.decrypt(encrypted)
     }
 
+    /// Data root of the full desktop HiveGUI application
+    /// (`{data_local_dir}/hivegui`).
+    ///
+    /// The folder name comes from [`AppIdentity::HIVEGUI`] so the Store root
+    /// and the application's log directory cannot drift apart.
     pub fn default_db_path() -> PathBuf {
-        dirs::data_local_dir()
-            .unwrap_or_else(|| dirs::home_dir().unwrap_or_default())
-            .join("hivegui")
+        AppIdentity::HIVEGUI.data_root()
+    }
+
+    /// Managed data root for the standalone Ngy Prompt Studio binary
+    /// (`{data_local_dir}/ngy_prompt_studio`).
+    ///
+    /// The prompt studio is an independent desktop-local Agent, so it owns its
+    /// own `datasources.db`, `encryption.key`, snapshots, and `plugins` tree
+    /// instead of sharing [`Store::default_db_path`]. A dedicated root is also
+    /// what makes the two binaries co-runnable: the production Store takes an
+    /// exclusive inter-process lock on `{root}/datasources.db.lock` (see
+    /// [`Store::open_local`]), so a second process opening the *same* root
+    /// fails closed with [`StoreOpenErrorKind::AlreadyLocked`] before any
+    /// window opens.
+    pub fn prompt_studio_db_path() -> PathBuf {
+        AppIdentity::NGY_PROMPT_STUDIO.data_root()
     }
 
     pub fn pool(&self) -> &Pool<Sqlite> {
@@ -2434,5 +2453,42 @@ mod deletable_column_migration_tests {
         .await
         .expect("pragma query");
         assert_eq!(exists, 1, "deletable 列应已被 open_local 补齐");
+    }
+}
+
+#[cfg(test)]
+mod data_root_tests {
+    use super::*;
+
+    /// The standalone prompt studio must never open the desktop app's data
+    /// root: a shared root puts both binaries behind the same exclusive
+    /// `datasources.db.lock` owner, so whichever starts second fails closed
+    /// with `AlreadyLocked` before any window opens.
+    #[test]
+    fn prompt_studio_root_is_distinct_from_desktop_root() {
+        let desktop = Store::default_db_path();
+        let studio = Store::prompt_studio_db_path();
+
+        assert_ne!(desktop, studio);
+        assert_eq!(studio.parent(), desktop.parent());
+        assert_eq!(
+            studio.file_name().and_then(|name| name.to_str()),
+            Some("ngy_prompt_studio")
+        );
+    }
+
+    /// The Store root and the application log directory are derived from one
+    /// [`AppIdentity`], so they can never point at different folders.
+    #[test]
+    fn store_roots_follow_the_application_identity() {
+        assert_eq!(Store::default_db_path(), AppIdentity::HIVEGUI.data_root());
+        assert_eq!(
+            Store::prompt_studio_db_path(),
+            AppIdentity::NGY_PROMPT_STUDIO.data_root()
+        );
+        assert_eq!(
+            AppIdentity::NGY_PROMPT_STUDIO.log_dir(),
+            Store::prompt_studio_db_path().join("logs")
+        );
     }
 }

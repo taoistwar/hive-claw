@@ -3230,15 +3230,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "directories"
-version = "6.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "16f5094c54661b38d03bd7e50df373292118db60b585c08a411c6d840017fe7d"
-dependencies = [
- "dirs-sys 0.5.0",
-]
-
-[[package]]
 name = "directories-next"
 version = "2.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5457,7 +5448,6 @@ dependencies = [
  "cap-std 4.0.3",
  "chacha20poly1305 0.11.0",
  "chrono",
- "directories",
  "dirs 7.0.0",
  "extism",
  "flate2",

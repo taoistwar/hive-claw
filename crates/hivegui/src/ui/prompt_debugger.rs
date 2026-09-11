@@ -1,11 +1,11 @@
 //! LLM 提示词调试工具 — 三栏布局：LLM 设置 / 消息编辑 / 结果展示。
 
 use crate::config::AppIdentity;
-use crate::datasource::entity_store::Tool as DbTool;
+use crate::datasource::entity_store::Function as DbFunction;
 use crate::datasource::llm_store::{LlmModel, LlmPreset, LlmProvider, LlmStore};
 use crate::datasource::{Crypto, Store};
 use crate::ui::management_style::{ActionRole, ManagementStyle};
-use gpui_kit::component::input::{Input, InputState, Textarea, TextareaState};
+use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::notification::Notification;
 use gpui_kit::component::scroll::ScrollableElement;
 use gpui_kit::component::{
@@ -76,6 +76,20 @@ fn valid_model_selection(
             .iter()
             .any(|model| model.id == *selected_model_id)
     })
+}
+
+/// 把「函数管理」里的一个函数映射成本页使用的 LLM tool 定义。
+///
+/// - 名称取函数名称（用户在选择器里看到的就是这个名字）；
+/// - 描述取函数描述（函数描述可以为空）；
+/// - 参数取函数的 `input_schema`。
+fn tool_definition_from_function(local_id: u64, function: &DbFunction) -> ToolDefinition {
+    ToolDefinition {
+        id: local_id,
+        name: function.name.clone(),
+        description: function.description.clone().unwrap_or_default(),
+        parameters_json: function.input_schema.clone(),
+    }
 }
 
 /// 消息角色
@@ -245,10 +259,12 @@ pub struct PromptDebugger {
             Entity<TextareaState>,
         ),
     >, // name, desc, params
-    // 从函数管理选择工具
-    available_tools: Vec<DbTool>,
+    // 「从函数管理选择工具」：数据源是函数管理（`functions` 表）里的函数，
+    // 每个函数按其 name/description/input_schema 变成一个 LLM tool 定义。
+    available_functions: Vec<DbFunction>,
     show_tool_picker: bool,
     tool_picker_search: String,
+    tool_picker_search_input: Option<Entity<InputState>>,
     tool_picker_scroll: ScrollHandle,
     // 右侧：结果
     call_state: CallState,
@@ -389,9 +405,10 @@ impl PromptDebugger {
             editing_tools: HashMap::new(),
             collapsed_tools: HashMap::new(),
             tool_inputs: HashMap::new(),
-            available_tools: vec![],
+            available_functions: vec![],
             show_tool_picker: false,
             tool_picker_search: String::new(),
+            tool_picker_search_input: None,
             tool_picker_scroll: ScrollHandle::default(),
             call_state: CallState::Idle,
             loaded: false,
@@ -427,7 +444,7 @@ impl PromptDebugger {
     }
 
     fn load_data(&mut self, cx: &mut Context<Self>) {
-        self.load_available_tools(cx);
+        self.reload_available_functions(cx);
         self.reload_presets_and_models(cx);
     }
 
@@ -613,15 +630,20 @@ impl PromptDebugger {
         .detach();
     }
 
-    /// 加载可用工具列表，仅在初次进入视图时调用一次。
-    fn load_available_tools(&mut self, cx: &mut Context<Self>) {
+    /// 加载「函数管理」里的函数，供本页作为 LLM tool 定义选用。
+    ///
+    /// 来源必须是 `functions` 表（函数管理），不是 `tools` 表（工具管理）：
+    /// “从函数管理选择”选的是函数定义本身，而不是包装了函数/流程的工具。
+    /// 每次打开选择器都会重新拉取一次（见 `toggle_tool_picker`），
+    /// 避免用户刚在函数管理里改完函数、回到本页却看到旧列表。
+    fn reload_available_functions(&mut self, cx: &mut Context<Self>) {
         let store = self.store.read(cx).clone();
         cx.spawn(async move |this, cx| {
-            let available_tools = DbTool::list(store.pool(), None, 100, 0)
+            let available_functions = DbFunction::list(store.pool(), None, 100, 0)
                 .await
                 .unwrap_or_default();
             _ = this.update(cx, |this, cx| {
-                this.available_tools = available_tools;
+                this.available_functions = available_functions;
                 this.style = ManagementStyle::from_theme(cx.theme());
                 cx.notify();
             });
@@ -789,26 +811,37 @@ impl PromptDebugger {
         self.editing_tools.insert(id, true);
     }
 
-    fn toggle_tool_picker(&mut self) {
+    /// 打开/关闭「从函数管理选择」选择器。
+    ///
+    /// 打开时清空搜索框并重新拉取函数列表：本视图在两个入口里都是随应用启动
+    /// 一次性构造的长生命周期视图，只在构造时拉一次会让用户刚在函数管理里
+    /// 新增/改名的函数看不见。
+    fn toggle_tool_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.show_tool_picker = !self.show_tool_picker;
         if self.show_tool_picker {
             self.tool_picker_search.clear();
+            if let Some(input) = self.tool_picker_search_input.clone() {
+                input.update(cx, |state, cx| state.set_value("", window, cx));
+            }
+            self.reload_available_functions(cx);
         }
     }
 
-    fn add_tool_from_management(&mut self, tool_id: i64) {
-        if let Some(db_tool) = self.available_tools.iter().find(|t| t.id == tool_id) {
-            let id = self.next_tool_id;
-            self.next_tool_id += 1;
-            self.tools.push(ToolDefinition {
-                id,
-                name: db_tool.name.clone(),
-                description: db_tool.description.clone(),
-                parameters_json: db_tool.input_schema.clone(),
-            });
-            // 新工具直接进入编辑模式
-            self.editing_tools.insert(id, true);
-        }
+    /// 把一个函数管理的函数作为 LLM tool 定义加入本页。
+    fn add_tool_from_function(&mut self, function_id: i64) {
+        let Some(function) = self
+            .available_functions
+            .iter()
+            .find(|function| function.id == function_id)
+        else {
+            return;
+        };
+        let id = self.next_tool_id;
+        self.next_tool_id += 1;
+        self.tools
+            .push(tool_definition_from_function(id, function));
+        // 新工具直接进入编辑模式
+        self.editing_tools.insert(id, true);
     }
 
     fn remove_tool(&mut self, id: u64) {
@@ -2347,9 +2380,9 @@ impl PromptDebugger {
                         )
                         .on_mouse_down(MouseButton::Left, {
                             let entity = entity.clone();
-                            move |_, _, cx| {
+                            move |_, window, cx| {
                                 entity.update(cx, |view, cx| {
-                                    view.toggle_tool_picker();
+                                    view.toggle_tool_picker(window, cx);
                                     cx.notify();
                                 });
                             }
@@ -5246,6 +5279,26 @@ impl Render for PromptDebugger {
         self.ensure_preset_select_state(window, cx);
         self.ensure_model_select_state(window, cx);
 
+        // 懒初始化「从函数管理选择」的搜索框，并把输入实时同步到过滤词。
+        // 之前每次渲染都新起一个 `InputState`，输入既留不住、也不会写回
+        // `tool_picker_search`，搜索框等于没有作用。
+        if self.tool_picker_search_input.is_none() {
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("搜索函数名称...")
+                    .default_value(self.tool_picker_search.clone())
+            });
+            cx.subscribe_in(&input, window, |this, state, event, _window, cx| {
+                if let InputEvent::Change = event {
+                    this.tool_picker_search = state.read(cx).value().to_string();
+                    cx.notify();
+                }
+            })
+            .detach();
+            self.tool_picker_search_input = Some(input);
+        }
+        let picker_search_input = self.tool_picker_search_input.clone().unwrap();
+
         let temp_input = self.temp_input.clone().unwrap();
         let max_tokens_input = self.max_tokens_input.clone().unwrap();
         let top_p_input = self.top_p_input.clone().unwrap();
@@ -5397,9 +5450,7 @@ impl Render for PromptDebugger {
                                     .py(px(12.0))
                                     .border_b_1()
                                     .border_color(style.list.border)
-                                    .child(div().w_full().child(Input::new(&cx.new(|cx| {
-                                        InputState::new(window, cx).placeholder("搜索工具名称...")
-                                    })))),
+                                    .child(div().w_full().child(Input::new(&picker_search_input))),
                             )
                             .child(
                                 div()
@@ -5415,24 +5466,32 @@ impl Render for PromptDebugger {
                                     .px(px(16.0))
                                     .py(px(8.0))
                                     .child(
-                                        self.available_tools
+                                        self.available_functions
                                             .iter()
-                                            .filter(|t| {
-                                                self.tool_picker_search.is_empty()
-                                                    || t.name.to_lowercase().contains(
-                                                        &self.tool_picker_search.to_lowercase(),
-                                                    )
+                                            .filter(|function| {
+                                                let query =
+                                                    self.tool_picker_search.trim().to_lowercase();
+                                                query.is_empty()
+                                                    || function.name.to_lowercase().contains(&query)
+                                                    || function
+                                                        .identifier
+                                                        .to_lowercase()
+                                                        .contains(&query)
                                             })
-                                            .fold(div(), |acc, tool| {
-                                                let tool_name = tool.name.clone();
-                                                let tool_identifier = tool.identifier.clone();
-                                                let tool_description = tool.description.clone();
-                                                let tool_id = tool.id;
+                                            .fold(div(), |acc, function| {
+                                                let function_id = function.id;
+                                                let function_name = function.name.clone();
+                                                let function_identifier =
+                                                    function.identifier.clone();
+                                                let function_description = function
+                                                    .description
+                                                    .clone()
+                                                    .unwrap_or_default();
                                                 acc.child(
                                                     div()
                                                         .id(SharedString::from(format!(
-                                                            "picker-tool-{}",
-                                                            tool_id
+                                                            "picker-function-{}",
+                                                            function_id
                                                         )))
                                                         .mb(px(8.0))
                                                         .p(px(12.0))
@@ -5449,8 +5508,8 @@ impl Render for PromptDebugger {
                                                             let entity = cx.entity();
                                                             move |_, _, cx| {
                                                                 entity.update(cx, |view, cx| {
-                                                                    view.add_tool_from_management(
-                                                                        tool_id,
+                                                                    view.add_tool_from_function(
+                                                                        function_id,
                                                                     );
                                                                     view.show_tool_picker = false;
                                                                     cx.notify();
@@ -5470,7 +5529,7 @@ impl Render for PromptDebugger {
                                                                             FontWeight::SEMIBOLD,
                                                                         )
                                                                         .child(SharedString::from(
-                                                                            tool_name.as_str(),
+                                                                            function_name.as_str(),
                                                                         )),
                                                                 )
                                                                 .child(
@@ -5482,7 +5541,7 @@ impl Render for PromptDebugger {
                                                                                 .muted_foreground,
                                                                         )
                                                                         .child(SharedString::from(
-                                                                            tool_identifier
+                                                                            function_identifier
                                                                                 .as_str(),
                                                                         )),
                                                                 ),
@@ -5494,7 +5553,7 @@ impl Render for PromptDebugger {
                                                                     style.list.muted_foreground,
                                                                 )
                                                                 .child(SharedString::from(
-                                                                    tool_description.as_str(),
+                                                                    function_description.as_str(),
                                                                 )),
                                                         ),
                                                 )
@@ -5521,7 +5580,49 @@ mod tests {
     use super::{
         DebugMessage, MessageRole, detached_flag_value, models_for_preset, valid_model_selection,
     };
+    use crate::datasource::entity_store::Function as DbFunction;
     use crate::datasource::llm_store::LlmModel;
+
+    fn function(id: i64, name: &str, description: Option<&str>) -> DbFunction {
+        DbFunction {
+            id,
+            identifier: format!("fn_{id}"),
+            name: name.to_string(),
+            description: description.map(|description| description.to_string()),
+            kind: "custom".to_string(),
+            input_schema: r#"{"type":"object","properties":{"city":{"type":"string"}}}"#
+                .to_string(),
+            output_schema: "{}".to_string(),
+            plugin_id: None,
+            plugin_export: None,
+            category_id: None,
+            required_capabilities: None,
+            created_at: String::new(),
+            updated_at: String::new(),
+        }
+    }
+
+    #[test]
+    fn function_management_entry_maps_to_tool_definition() {
+        let function = function(7, "天气查询", Some("查询指定城市的天气"));
+
+        let tool = super::tool_definition_from_function(3, &function);
+
+        assert_eq!(tool.id, 3);
+        assert_eq!(tool.name, "天气查询");
+        assert_eq!(tool.description, "查询指定城市的天气");
+        assert_eq!(tool.parameters_json, function.input_schema);
+    }
+
+    #[test]
+    fn function_without_description_maps_to_empty_description() {
+        let function = function(9, "无描述函数", None);
+
+        let tool = super::tool_definition_from_function(1, &function);
+
+        assert_eq!(tool.name, "无描述函数");
+        assert!(tool.description.is_empty());
+    }
 
     fn model(id: i64, preset_id: i64, priority: i32) -> LlmModel {
         LlmModel {

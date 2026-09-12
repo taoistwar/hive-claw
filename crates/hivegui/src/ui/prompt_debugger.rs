@@ -320,6 +320,8 @@ pub struct PromptDebugger {
     history_scroll: ScrollHandle,
     /// 历史记录列表当前页码（从 0 开始）。
     history_page: usize,
+    /// 右侧「历史」面板是否折叠：折叠后只留一个展开按钮，编辑区占满剩余宽度。
+    history_collapsed: bool,
     // 右键菜单（记录 ID + 窗口坐标）
     context_menu: Option<(u64, Point<Pixels>)>,
     // 查看/对比弹出窗口
@@ -456,6 +458,7 @@ impl PromptDebugger {
             comparing_records: vec![],
             history_scroll: ScrollHandle::default(),
             history_page: 0,
+            history_collapsed: false,
             context_menu: None,
             show_view_modal: false,
             view_records: vec![],
@@ -1173,6 +1176,11 @@ impl PromptDebugger {
     fn next_history_page(&mut self) {
         let current = self.current_history_page();
         self.history_page = (current + 1).min(self.history_total_pages() - 1);
+    }
+
+    /// 折叠/展开右侧「历史」面板。
+    fn toggle_history_collapsed(&mut self) {
+        self.history_collapsed = !self.history_collapsed;
     }
 
     /// 切换记录选中状态
@@ -2528,7 +2536,88 @@ fn history_action_button(
         })
 }
 
-/// 右侧面板（历史 + 当前结果合并）
+/// 折叠状态的右侧面板：只留一个「展开」按钮和记录条数，宽度让给编辑区。
+fn collapsed_history_panel(
+    history_count: usize,
+    style: &ManagementStyle,
+    entity: Entity<PromptDebugger>,
+) -> Div {
+    div()
+        .debug_selector(|| "PROMPT_HISTORY_COLLAPSED_PANEL".to_owned())
+        .w(px(40.0))
+        .flex_shrink_0()
+        .h_full()
+        .py(px(12.0))
+        .border_l_1()
+        .border_color(style.list.border)
+        .flex()
+        .flex_col()
+        .items_center()
+        .gap(px(8.0))
+        .child(history_collapse_button(
+            "PROMPT_HISTORY_EXPAND",
+            true,
+            style,
+            entity,
+        ))
+        .child(
+            div()
+                .text_size(px(11.0))
+                .text_color(style.list.muted_foreground)
+                .child(SharedString::from(history_count.to_string())),
+        )
+}
+
+/// 历史面板的折叠/展开图标按钮：展开态显示「折叠」，折叠态显示「展开」。
+fn history_collapse_button(
+    selector: &'static str,
+    collapsed: bool,
+    style: &ManagementStyle,
+    entity: Entity<PromptDebugger>,
+) -> impl IntoElement {
+    let idle_color = style.list.muted_foreground;
+    let hover_background = style.list.hover;
+    let hover_color = style.list.foreground;
+    div()
+        .id(SharedString::from(format!(
+            "prompt-history-collapse-{collapsed}"
+        )))
+        .debug_selector(move || selector.to_owned())
+        .role(Role::Button)
+        .aria_label(if collapsed {
+            "展开历史记录"
+        } else {
+            "折叠历史记录"
+        })
+        .flex()
+        .items_center()
+        .justify_center()
+        .w(px(20.0))
+        .h(px(20.0))
+        .flex_shrink_0()
+        .rounded(px(4.0))
+        .cursor(CursorStyle::PointingHand)
+        .text_color(idle_color)
+        .hover(move |this| this.bg(hover_background).text_color(hover_color))
+        .child(
+            Icon::new(if collapsed {
+                IconName::PanelRightOpen
+            } else {
+                IconName::PanelRightClose
+            })
+            .xsmall(),
+        )
+        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+            entity.update(cx, |view, cx| {
+                view.toggle_history_collapsed();
+                cx.notify();
+            });
+        })
+}
+
+/// 右侧面板（历史 + 当前结果合并）。
+///
+/// `history_collapsed` 为真时只渲染一条窄栏（展开按钮 + 记录条数），把宽度让给编辑区。
 fn right_panel(
     _call_state: &CallState,
     selected_count: usize,
@@ -2536,9 +2625,14 @@ fn right_panel(
     history_page: usize,
     history: &[ExecutionRecord],
     selected_ids: &HashSet<u64>,
+    history_collapsed: bool,
     style: &ManagementStyle,
     entity: Entity<PromptDebugger>,
-) -> impl IntoElement {
+) -> AnyElement {
+    if history_collapsed {
+        return collapsed_history_panel(history_count, style, entity).into_any_element();
+    }
+
     let mut panel = div()
         .w(px(320.0))
         .flex_shrink_0()
@@ -2547,6 +2641,7 @@ fn right_panel(
         .border_l_1()
         .border_color(style.list.border)
         .overflow_y_scrollbar()
+        .debug_selector(|| "PROMPT_HISTORY_PANEL".to_owned())
         .flex()
         .flex_col()
         .gap(px(8.0));
@@ -2568,9 +2663,21 @@ fn right_panel(
             )
             .child(
                 div()
-                    .text_size(px(12.0))
-                    .text_color(style.list.muted_foreground)
-                    .child(format!("({} 条)", history_count)),
+                    .flex()
+                    .items_center()
+                    .gap(px(6.0))
+                    .child(
+                        div()
+                            .text_size(px(12.0))
+                            .text_color(style.list.muted_foreground)
+                            .child(format!("({} 条)", history_count)),
+                    )
+                    .child(history_collapse_button(
+                        "PROMPT_HISTORY_COLLAPSE",
+                        false,
+                        style,
+                        entity.clone(),
+                    )),
             ),
     );
 
@@ -2844,7 +2951,7 @@ fn right_panel(
         );
     }
 
-    panel
+    panel.into_any_element()
 }
 
 /// 历史记录右键菜单。
@@ -5398,6 +5505,7 @@ impl Render for PromptDebugger {
                         self.history_page,
                         &self.execution_history,
                         &self.selected_record_ids,
+                        self.history_collapsed,
                         &style,
                         cx.entity(),
                     )),
@@ -7070,6 +7178,73 @@ mod geometry_tests {
                 .update(&mut cx, |view, _, _| view.context_menu.is_none())
                 .expect("read context menu state"),
             "删除后右键菜单应关闭"
+        );
+    }
+
+    /// 右侧「历史」面板可以折叠：折叠后只剩展开按钮、列表与操作栏消失、面板变窄，
+    /// 再点展开恢复原状。
+    #[gpui_kit::test]
+    fn history_panel_collapses_and_expands(cx: &mut TestAppContext) {
+        let (window, _temp_dir, _runtime) = open_debugger_with_history(cx, 3);
+        cx.run_until_parked();
+
+        let typed_window = window;
+        let mut cx = VisualTestContext::from_window(window.into(), cx);
+
+        let expanded_panel = cx
+            .debug_bounds("PROMPT_HISTORY_PANEL")
+            .expect("expanded history panel");
+        assert!(
+            cx.debug_bounds("PROMPT_HISTORY_RECORD_3").is_some()
+                && cx.debug_bounds("PROMPT_HISTORY_SELECT_ALL").is_some(),
+            "展开态必须渲染历史列表与操作栏"
+        );
+        assert!(
+            cx.debug_bounds("PROMPT_HISTORY_EXPAND").is_none(),
+            "展开态不应出现展开按钮"
+        );
+
+        let collapse = cx
+            .debug_bounds("PROMPT_HISTORY_COLLAPSE")
+            .expect("collapse button");
+        cx.simulate_click(collapse.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        assert!(
+            typed_window
+                .update(&mut cx, |view, _, _| view.history_collapsed)
+                .expect("read collapsed state"),
+            "点击折叠按钮必须折叠历史面板"
+        );
+        let collapsed_panel = cx
+            .debug_bounds("PROMPT_HISTORY_COLLAPSED_PANEL")
+            .expect("collapsed history panel");
+        assert!(
+            collapsed_panel.size.width < expanded_panel.size.width,
+            "折叠后右侧面板必须变窄：expanded={expanded_panel:?}, collapsed={collapsed_panel:?}"
+        );
+        assert!(
+            cx.debug_bounds("PROMPT_HISTORY_RECORD_3").is_none()
+                && cx.debug_bounds("PROMPT_HISTORY_SELECT_ALL").is_none(),
+            "折叠后不应再渲染历史列表与操作栏"
+        );
+
+        let expand = cx
+            .debug_bounds("PROMPT_HISTORY_EXPAND")
+            .expect("expand button");
+        cx.simulate_click(expand.center(), Modifiers::default());
+        cx.run_until_parked();
+
+        assert!(
+            !typed_window
+                .update(&mut cx, |view, _, _| view.history_collapsed)
+                .expect("read collapsed state after expand"),
+            "点击展开按钮必须恢复历史面板"
+        );
+        assert!(
+            cx.debug_bounds("PROMPT_HISTORY_PANEL").is_some()
+                && cx.debug_bounds("PROMPT_HISTORY_RECORD_3").is_some(),
+            "展开后必须恢复历史列表"
         );
     }
 

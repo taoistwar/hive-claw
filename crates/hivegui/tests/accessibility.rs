@@ -1532,6 +1532,18 @@ fn open_function_visual_window(
     })
 }
 
+fn open_prompt_studio_function_visual_window(
+    cx: &mut TestAppContext,
+    store: gpui_kit::Entity<hivegui::datasource::Store>,
+    window_size: gpui_kit::Size<gpui_kit::Pixels>,
+) -> WindowHandle<gpui_kit::component::Root> {
+    cx.open_window(window_size, move |window, cx| {
+        let view = cx
+            .new(|cx| hivegui::ui::function_view::FunctionView::new_prompt_studio(store, cx));
+        gpui_kit::component::Root::new(view, window, cx).bordered(false)
+    })
+}
+
 fn click_function_selector(visual: &mut VisualTestContext, selector: &'static str) -> bool {
     let Some(bounds) = visual.debug_bounds(selector) else {
         return false;
@@ -1824,9 +1836,20 @@ fn function_builtin_and_placeholder_surfaces_enforce_kind_semantics(cx: &mut Tes
     );
     let builtin_attempt_name_set =
         replace_function_input(&mut visual, "FUNCTION_NAME", "T085 user Builtin attempt");
-    let builtin_attempt_submitted = click_function_selector(&mut visual, "FUNCTION_FORM_SAVE")
-        && settle_function_selector_absent(&mut visual, "FUNCTION_MODAL")
-        && settle_function_selector(&mut visual, "FUNCTION_LIST_LOADED");
+    // 桌面版 Add 表单只提供「自定义函数」，而自定义函数必须绑定插件导出：
+    // 这里没有选插件，提交必须被拒绝并保持表单打开，绝不落库。
+    if let Some(scroll) = visual.debug_bounds("FUNCTION_FORM_SCROLL") {
+        visual.simulate_event(ScrollWheelEvent {
+            position: point(scroll.left() + px(24.0), scroll.top() + px(24.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-2_000.0))),
+            modifiers: Default::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        visual.run_until_parked();
+    }
+    let builtin_attempt_rejected = click_function_selector(&mut visual, "FUNCTION_FORM_SAVE")
+        && settle_function_selector(&mut visual, "FUNCTION_FORM_ERROR_FOCUSED");
+    let builtin_attempt_modal_open = visual.debug_bounds("FUNCTION_MODAL").is_some();
     let add_closed = if visual.debug_bounds("FUNCTION_MODAL").is_some() {
         click_function_selector(&mut visual, "FUNCTION_FORM_CANCEL")
     } else {
@@ -1909,8 +1932,12 @@ fn function_builtin_and_placeholder_surfaces_enforce_kind_semantics(cx: &mut Tes
         "the user-facing Add form must never make Builtin selectable or writable"
     );
     assert!(
-        builtin_attempt_identifier_set && builtin_attempt_name_set && builtin_attempt_submitted,
-        "the test must attempt creation through the rendered Function Add form"
+        builtin_attempt_identifier_set && builtin_attempt_name_set,
+        "the test must drive creation through the rendered Function Add form"
+    );
+    assert!(
+        builtin_attempt_rejected && builtin_attempt_modal_open,
+        "a Custom Function without a Plugin must be rejected with a form error"
     );
     assert!(
         builtin_attempts
@@ -2067,12 +2094,33 @@ fn function_keyboard_conflict_preserves_safe_value_focus_and_modal_lifecycle(
     runtime
         .block_on(function_store.create(duplicate_input))
         .expect("seed duplicate Function");
+    // 桌面版 Add 表单不再提供「占位」类型，而自定义函数必须绑定插件导出，
+    // 因此这里用「编辑既有占位函数」驱动同一条冲突与键盘合同。
+    let editable_input = FunctionInput::for_write(
+        "t085_safe_editable".to_string(),
+        "Existing editable placeholder".to_string(),
+        None,
+        FunctionKind::Placeholder,
+        "{}".to_string(),
+        "{}".to_string(),
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("build editable Function fixture");
+    let editable = runtime
+        .block_on(function_store.create(editable_input))
+        .expect("seed editable placeholder");
     let _runtime_guard = runtime.enter();
     let window = open_function_visual_window(cx, store_entity, size(px(760.0), px(900.0)));
     cx.run_until_parked();
     let mut visual = VisualTestContext::from_window(window.into(), cx);
 
-    let add_visible = click_function_selector(&mut visual, "FUNCTION_ADD");
+    let edit_selector: &'static str =
+        Box::leak(format!("FUNCTION_EDIT-{}", editable.id()).into_boxed_str());
+    let edit_opened = settle_function_selector(&mut visual, edit_selector)
+        && click_function_selector(&mut visual, edit_selector);
     let modal_visible = visual.debug_bounds("FUNCTION_MODAL").is_some();
     let identifier_initially_focused = visual.debug_bounds("FUNCTION_IDENTIFIER_FOCUSED").is_some();
     if modal_visible {
@@ -2090,8 +2138,14 @@ fn function_keyboard_conflict_preserves_safe_value_focus_and_modal_lifecycle(
         replace_function_input(&mut visual, "FUNCTION_IDENTIFIER", DRAFT_IDENTIFIER);
     let name_set = replace_function_input(&mut visual, "FUNCTION_NAME", "Duplicate attempt");
     let kind_opened = click_function_selector(&mut visual, "FUNCTION_KIND_SELECTOR");
-    let placeholder_selected =
-        click_function_selector(&mut visual, "FUNCTION_KIND_OPTION-placeholder");
+    // 桌面版 Kind 只提供「自定义函数」，占位类型已从用户可选类型里移除；
+    // 这里只探测菜单内容，随后收起菜单，保持当前占位函数的 kind 不变。
+    let custom_option_visible = visual.debug_bounds("FUNCTION_KIND_OPTION-custom").is_some();
+    let placeholder_option_absent =
+        visual.debug_bounds("FUNCTION_KIND_OPTION-placeholder").is_none();
+    if kind_opened {
+        let _ = click_function_selector(&mut visual, "FUNCTION_KIND_SELECTOR");
+    }
     let textarea_clicked = click_function_selector(&mut visual, "FUNCTION_INPUT_SCHEMA");
     let textarea_focused = visual
         .debug_bounds("FUNCTION_INPUT_SCHEMA_FOCUSED")
@@ -2156,8 +2210,11 @@ fn function_keyboard_conflict_preserves_safe_value_focus_and_modal_lifecycle(
         && visual.debug_bounds("FUNCTION_IDENTIFIER_FOCUSED").is_some();
     close_function_visual_window(&mut visual);
 
-    assert!(add_visible, "Function Add control must expose FUNCTION_ADD");
-    assert!(modal_visible, "Function Add must open FUNCTION_MODAL");
+    assert!(
+        edit_opened,
+        "Function row must expose FUNCTION_EDIT for the keyboard conflict contract"
+    );
+    assert!(modal_visible, "Function edit must open FUNCTION_MODAL");
     assert!(
         identifier_initially_focused,
         "opening the Function modal must focus its first field"
@@ -2172,8 +2229,8 @@ fn function_keyboard_conflict_preserves_safe_value_focus_and_modal_lifecycle(
     );
     assert!(name_set, "Function form must expose FUNCTION_NAME");
     assert!(
-        kind_opened && placeholder_selected,
-        "Placeholder kind must be selectable"
+        kind_opened && custom_option_visible && placeholder_option_absent,
+        "the desktop Kind menu must offer Custom and no longer offer Placeholder"
     );
     assert!(
         textarea_clicked && textarea_focused,
@@ -2243,6 +2300,121 @@ fn function_keyboard_conflict_preserves_safe_value_focus_and_modal_lifecycle(
     assert!(
         reopened_from_keyboard,
         "restored Add focus must support Enter to reopen the Function modal"
+    );
+}
+
+/// Ngy Prompt Studio 的函数管理（PRD §函数管理）：函数只能是占位类型、名称即标识、
+/// 不展示任何执行相关提示。
+#[gpui_kit::test]
+fn prompt_studio_function_surface_merges_identifier_into_name_and_hides_execution_hints(
+    cx: &mut TestAppContext,
+) {
+    use gpui_kit::{ScrollDelta, ScrollWheelEvent, TouchPhase, point};
+    use hivegui::datasource::{FunctionInput, FunctionKind, FunctionStore};
+
+    const SEEDED: &str = "t_ps_schema_only";
+    const CREATED: &str = "ps_created_from_name";
+
+    let (_workspace, store, store_entity, runtime) = function_visual_store(cx);
+    let function_store =
+        FunctionStore::new(store.pool().clone()).expect("construct public FunctionStore fixture");
+    let placeholder_input = FunctionInput::for_write(
+        SEEDED.to_string(),
+        SEEDED.to_string(),
+        None,
+        FunctionKind::Placeholder,
+        "{}".to_string(),
+        "{}".to_string(),
+        None,
+        None,
+        None,
+        None,
+    )
+    .expect("build Prompt Studio placeholder fixture");
+    let placeholder = runtime
+        .block_on(function_store.create(placeholder_input))
+        .expect("seed Prompt Studio placeholder");
+    // `Store::open_local` 同步了代码拥有的四个内置函数；它们不得出现在 PS 里。
+    let builtin_id = runtime
+        .block_on(async {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM functions WHERE identifier = ? AND kind = 'builtin'",
+            )
+            .bind("format_template")
+            .fetch_one(store.pool())
+            .await
+        })
+        .expect("resolve synchronized system-owned Builtin Function");
+    let _runtime_guard = runtime.enter();
+    let window =
+        open_prompt_studio_function_visual_window(cx, store_entity, size(px(760.0), px(900.0)));
+    cx.run_until_parked();
+    let mut visual = VisualTestContext::from_window(window.into(), cx);
+
+    let row_state_selector: &'static str = Box::leak(
+        format!("FUNCTION_PLACEHOLDER_NON_EXECUTABLE-{}", placeholder.id()).into_boxed_str(),
+    );
+    let builtin_readonly_selector: &'static str =
+        Box::leak(format!("FUNCTION_BUILTIN_READONLY-{builtin_id}").into_boxed_str());
+    let builtin_test_selector: &'static str =
+        Box::leak(format!("FUNCTION_TEST-{builtin_id}").into_boxed_str());
+    let list_loaded = settle_function_selector(&mut visual, "FUNCTION_LIST_LOADED");
+    let row_state_hidden = visual.debug_bounds(row_state_selector).is_none();
+    let builtin_row_hidden = visual.debug_bounds(builtin_readonly_selector).is_none();
+    let builtin_test_hidden = visual.debug_bounds(builtin_test_selector).is_none();
+
+    let add_opened = click_function_selector(&mut visual, "FUNCTION_ADD");
+    let kind_selector_hidden = visual.debug_bounds("FUNCTION_KIND_SELECTOR").is_none();
+    let identifier_field_hidden = visual.debug_bounds("FUNCTION_IDENTIFIER").is_none();
+    let schema_only_hint_hidden = visual
+        .debug_bounds("FUNCTION_PLACEHOLDER_SCHEMA_ONLY")
+        .is_none();
+    let name_set = replace_function_input(&mut visual, "FUNCTION_NAME", CREATED);
+    if let Some(scroll) = visual.debug_bounds("FUNCTION_FORM_SCROLL") {
+        visual.simulate_event(ScrollWheelEvent {
+            position: point(scroll.left() + px(24.0), scroll.top() + px(24.0)),
+            delta: ScrollDelta::Pixels(point(px(0.0), px(-2_000.0))),
+            modifiers: Default::default(),
+            touch_phase: TouchPhase::Moved,
+        });
+        visual.run_until_parked();
+    }
+    let saved = click_function_selector(&mut visual, "FUNCTION_FORM_SAVE")
+        && settle_function_selector_absent(&mut visual, "FUNCTION_MODAL");
+    // 保存成功后视图会异步重载列表。必须在本测试仍持有 Tokio 上下文时把它跑完：
+    // 否则收尾阶段清理该任务时线程已不在 Tokio 上下文中，SQLite 连接归还池会 panic。
+    for _ in 0..40 {
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        visual.run_until_parked();
+    }
+    close_function_visual_window(&mut visual);
+
+    assert!(list_loaded, "Prompt Studio Function list must load");
+    assert!(
+        builtin_row_hidden && builtin_test_hidden,
+        "Prompt Studio must not list Builtin Functions"
+    );
+    assert!(
+        row_state_hidden,
+        "Prompt Studio must not render the non-executable row state"
+    );
+    assert!(add_opened, "Prompt Studio must expose FUNCTION_ADD");
+    assert!(
+        kind_selector_hidden,
+        "Prompt Studio must hide the Kind selector"
+    );
+    assert!(
+        identifier_field_hidden,
+        "Prompt Studio must hide the Identifier field"
+    );
+    assert!(
+        schema_only_hint_hidden,
+        "Prompt Studio must not render the schema-only execution hint"
+    );
+    assert!(name_set, "Prompt Studio must still expose the Name field");
+    assert!(
+        saved,
+        "Prompt Studio must persist a placeholder from the Name field alone"
     );
 }
 

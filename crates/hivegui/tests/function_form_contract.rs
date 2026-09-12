@@ -43,10 +43,6 @@ fn placeholder_function_kind_only_exposes_schema_configuration() {
     let source = include_str!("../src/ui/function_view.rs");
 
     assert!(
-        source.contains("(\"placeholder\", \"占位\")"),
-        "Kind selector must offer the placeholder function type"
-    );
-    assert!(
         source.contains("\"placeholder\" => \"占位\""),
         "placeholder functions must use a readable Kind label"
     );
@@ -67,6 +63,58 @@ fn placeholder_function_kind_only_exposes_schema_configuration() {
     assert!(
         source.contains(".when(ic.kind != \"placeholder\""),
         "a placeholder without an implementation must not expose the test action"
+    );
+}
+
+#[test]
+fn desktop_kind_selector_no_longer_offers_the_placeholder_type() {
+    let source = include_str!("../src/ui/function_view.rs");
+
+    assert!(
+        source.contains("[(\"custom\", \"自定义函数\")]"),
+        "the desktop Kind selector must only offer the custom function type"
+    );
+    assert!(
+        !source.contains("(\"placeholder\", \"占位\")"),
+        "the desktop Kind selector must not offer the placeholder type"
+    );
+    assert!(
+        source.contains("fn default_function_kind(is_prompt_studio: bool)"),
+        "the default Kind must be derived from the running application"
+    );
+}
+
+#[test]
+fn prompt_studio_function_form_drops_kind_identifier_and_execution_hints() {
+    let source = include_str!("../src/ui/function_view.rs");
+
+    assert!(
+        source.contains("pub fn new_prompt_studio(store: Entity<Store>, cx: &mut Context<Self>)"),
+        "Prompt Studio must construct its own Function management view"
+    );
+    assert!(
+        source.contains("fn prompt_studio_identifier(name: &str)"),
+        "Prompt Studio must derive the identifier from the function name"
+    );
+    assert!(
+        source.contains(".when(!is_prompt_studio, |form| form.child("),
+        "Prompt Studio must hide the Kind selector and the Identifier field"
+    );
+    assert!(
+        source.contains("self.form_kind == \"placeholder\" && !is_prompt_studio"),
+        "Prompt Studio must not render the schema-only execution hint"
+    );
+    assert!(
+        source.contains("item.kind == \"placeholder\" && !is_prompt_studio"),
+        "Prompt Studio must not render the non-executable row state"
+    );
+    assert!(
+        source.contains("let show_identifier = !is_prompt_studio;"),
+        "Prompt Studio must not render the redundant Identifier column"
+    );
+    assert!(
+        source.contains("items.retain(|item| item.kind != FunctionKind::Builtin.as_str());"),
+        "Prompt Studio must not list Builtin Functions"
     );
 }
 

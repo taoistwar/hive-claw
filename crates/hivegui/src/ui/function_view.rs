@@ -164,8 +164,37 @@ pub fn function_semantic_accesskit_probe(
     node
 }
 
+/// 新建函数时的默认 Kind：桌面版只能是可执行的自定义函数，Ngy Prompt
+/// Studio 则固定为占位函数。
+fn default_function_kind(is_prompt_studio: bool) -> &'static str {
+    if is_prompt_studio {
+        "placeholder"
+    } else {
+        "custom"
+    }
+}
+
+/// Ngy Prompt Studio 不显示 Identifier 字段，名称直接充当函数标识；只有能构成
+/// 合法标识（ASCII 字母数字/下划线/连字符）的名称才允许同步到 identifier，
+/// 这样「只改描述」不会把历史遗留记录改写成非法标识。
+fn prompt_studio_identifier(name: &str) -> Option<String> {
+    let trimmed = name.trim();
+    if trimmed.is_empty()
+        || !trimmed
+            .chars()
+            .all(|character| character.is_ascii_alphanumeric() || matches!(character, '_' | '-'))
+    {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
 pub struct FunctionView {
     store: Entity<Store>,
+    /// 是否运行在 Ngy Prompt Studio 应用中。该应用里函数管理只有「占位」一种
+    /// kind（因此不显示 Kind 选择器）、名称即标识（因此不显示 Identifier），
+    /// 且不展示任何执行相关提示；桌面版保持完整能力，只是不再提供占位类型。
+    is_prompt_studio: bool,
     items: Vec<RuntimeFunction>,
     plugins: Vec<Plugin>,
     capabilities: Vec<Capability>,
@@ -232,7 +261,18 @@ pub struct FunctionView {
 }
 
 impl FunctionView {
+    /// 桌面版（HiveGUI）函数管理：保留 Kind 选择器，但只提供自定义函数。
     pub fn new(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
+        Self::for_app(store, false, cx)
+    }
+
+    /// Ngy Prompt Studio 函数管理：函数只能是占位类型、名称即标识、
+    /// 不展示执行相关提示（见仓库根 `PRD.md` §函数管理）。
+    pub fn new_prompt_studio(store: Entity<Store>, cx: &mut Context<Self>) -> Self {
+        Self::for_app(store, true, cx)
+    }
+
+    fn for_app(store: Entity<Store>, is_prompt_studio: bool, cx: &mut Context<Self>) -> Self {
         cx.bind_keys([
             KeyBinding::new("tab", FunctionFormTab, Some("HiveguiFunctionForm")),
             KeyBinding::new(
@@ -243,6 +283,7 @@ impl FunctionView {
         ]);
         let mut v = Self {
             store,
+            is_prompt_studio,
             items: Vec::new(),
             plugins: Vec::new(),
             capabilities: Vec::new(),
@@ -269,7 +310,7 @@ impl FunctionView {
             form_identifier: String::new(),
             form_name: String::new(),
             form_description: String::new(),
-            form_kind: "placeholder".to_string(),
+            form_kind: default_function_kind(is_prompt_studio).to_string(),
             form_plugin_id: None,
             form_plugin_export: None,
             form_capability: None,
@@ -396,6 +437,7 @@ impl FunctionView {
             Some(self.search_text.clone())
         };
         let page = self.current_page;
+        let hide_builtin = self.is_prompt_studio;
         cx.spawn(async move |this, cx| {
             let result = match FunctionStore::new(pool) {
                 Ok(store) => store.list(search, page).await,
@@ -403,13 +445,25 @@ impl FunctionView {
             };
             this.update(cx, |v, cx| match result {
                 Ok(page) => {
-                    v.items = page
+                    let mut items = page
                         .items()
                         .iter()
                         .cloned()
                         .map(FunctionRecord::into_legacy_entity)
-                        .collect();
-                    v.total_count = page.total();
+                        .collect::<Vec<_>>();
+                    let mut total = page.total();
+                    if hide_builtin {
+                        // Ngy Prompt Studio 不展示内置函数：内置函数是代码拥有的
+                        // 可执行能力，PS 只管理自己的占位函数。
+                        let hidden = items
+                            .iter()
+                            .filter(|item| item.kind == FunctionKind::Builtin.as_str())
+                            .count() as i64;
+                        items.retain(|item| item.kind != FunctionKind::Builtin.as_str());
+                        total = (total - hidden).max(0);
+                    }
+                    v.items = items;
+                    v.total_count = total;
                     v.current_page = page.page();
                     v.loading = false;
                     cx.notify();
@@ -433,7 +487,7 @@ impl FunctionView {
         self.form_identifier.clear();
         self.form_name.clear();
         self.form_description.clear();
-        self.form_kind = "placeholder".to_string();
+        self.form_kind = default_function_kind(self.is_prompt_studio).to_string();
         self.form_plugin_id = None;
         self.form_plugin_export = None;
         self.form_capability = None;
@@ -546,13 +600,13 @@ impl FunctionView {
     }
 
     fn install_form_focus_lifecycle(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let identifier = self
-            .identifier_input
-            .as_ref()
-            .expect("Function identifier input initialized")
+        // Prompt Studio 不渲染 Identifier 字段，首个可聚焦字段是名称。
+        let first_field = self
+            .first_form_field_input()
+            .expect("Function first form field initialized")
             .clone();
-        let identifier_focus = identifier.read(cx).focus_handle(cx);
-        cx.on_focus(&identifier_focus, window, |view, _, cx| {
+        let first_field_focus = first_field.read(cx).focus_handle(cx);
+        cx.on_focus(&first_field_focus, window, |view, _, cx| {
             view.form_scroll.scroll_to_item(1);
             cx.notify();
         })
@@ -564,12 +618,20 @@ impl FunctionView {
         })
         .detach();
         cx.on_next_frame(window, move |_view, window, cx| {
-            identifier.update(cx, |input, cx| input.focus(window, cx));
+            first_field.update(cx, |input, cx| input.focus(window, cx));
         });
-        self.identifier_input
-            .as_ref()
-            .expect("Function identifier input initialized")
+        self.first_form_field_input()
+            .expect("Function first form field initialized")
             .update(cx, |input, cx| input.focus(window, cx));
+    }
+
+    /// 表单里第一个可见的文本字段：桌面版是 Identifier，Prompt Studio 是名称。
+    fn first_form_field_input(&self) -> Option<&Entity<InputState>> {
+        if self.is_prompt_studio {
+            self.name_input.as_ref()
+        } else {
+            self.identifier_input.as_ref()
+        }
     }
 
     /// Keyboard handler for the Function modal. The gpui-component focus trap
@@ -596,11 +658,12 @@ impl FunctionView {
     fn focus_form_next(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         cx.stop_propagation();
         window.focus_next(cx);
-        if !self.form_focus.contains_focused(window, cx)
-            && let Some(identifier) = self.identifier_input.as_ref()
-        {
-            self.form_scroll.set_offset(point(px(0.0), px(0.0)));
-            identifier.read(cx).focus_handle(cx).focus(window, cx);
+        if !self.form_focus.contains_focused(window, cx) {
+            let first_field = self.first_form_field_input().cloned();
+            if let Some(first_field) = first_field {
+                self.form_scroll.set_offset(point(px(0.0), px(0.0)));
+                first_field.read(cx).focus_handle(cx).focus(window, cx);
+            }
         }
         cx.notify();
     }
@@ -632,11 +695,18 @@ impl FunctionView {
     }
 
     fn save(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(ref inp) = self.identifier_input {
-            self.form_identifier = inp.read(cx).value().to_string();
-        }
         if let Some(ref inp) = self.name_input {
             self.form_name = inp.read(cx).value().to_string();
+        }
+        if self.is_prompt_studio {
+            // Prompt Studio 不显示 Identifier：名称直接充当函数标识。名称无法
+            // 构成合法标识时（历史记录的中文名称）保留既有标识，避免只改描述
+            // 就被校验拦下；新建时留空，由 Store 返回标识校验错误。
+            if let Some(identifier) = prompt_studio_identifier(&self.form_name) {
+                self.form_identifier = identifier;
+            }
+        } else if let Some(ref inp) = self.identifier_input {
+            self.form_identifier = inp.read(cx).value().to_string();
         }
         if let Some(ref inp) = self.description_input {
             self.form_description = inp.read(cx).value().to_string();
@@ -1251,13 +1321,21 @@ impl Render for FunctionView {
                             .text_size(px(14.0))
                             .child("暂无数据")
                     } else {
-                        let col_widths = [px(60.0), px(120.0), px(100.0), px(80.0), px(120.0)];
+                        let col_widths = [px(60.0), px(160.0), px(100.0), px(80.0), px(120.0)];
+                        // Prompt Studio 的名称即标识，Identifier 列是纯冗余。
+                        let is_prompt_studio = self.is_prompt_studio;
+                        let show_identifier = !is_prompt_studio;
                         list_container(style)
                             .child(
                                 list_header(style)
                                     .child(list_header_cell(Some(col_widths[0]), style).child("ID"))
                                     .child(list_header_cell(Some(col_widths[1]), style).child("名称"))
-                                    .child(list_header_cell(Some(col_widths[2]), style).child("Identifier"))
+                                    .when(show_identifier, |header| {
+                                        header.child(
+                                            list_header_cell(Some(col_widths[2]), style)
+                                                .child("Identifier"),
+                                        )
+                                    })
                                     .child(list_header_cell(Some(col_widths[3]), style).child("Kind"))
                                     .child(list_header_cell(Some(col_widths[4]), style).child("操作")),
                             )
@@ -1273,11 +1351,13 @@ impl Render for FunctionView {
                                             .font_weight(FontWeight::MEDIUM)
                                             .child(item.name.clone()),
                                     )
-                                    .child(
-                                        list_cell(Some(col_widths[2]), style)
-                                            .truncate()
-                                            .child(item.identifier.clone()),
-                                    )
+                                    .when(show_identifier, |row| {
+                                        row.child(
+                                            list_cell(Some(col_widths[2]), style)
+                                                .truncate()
+                                                .child(item.identifier.clone()),
+                                        )
+                                    })
                                     .child(
                                         list_cell(Some(col_widths[3]), style)
                                             .flex()
@@ -1297,19 +1377,23 @@ impl Render for FunctionView {
                                                         .child("只读"),
                                                 )
                                             })
-                                            .when(item.kind == "placeholder", |cell| {
-                                                cell.child(
-                                                    function_semantic_element(
-                                                        FunctionSemanticStatus::PlaceholderNonExecutable {
-                                                            id,
-                                                            identifier: identifier.clone(),
-                                                        },
+                                            // Prompt Studio 里不出现执行相关提示。
+                                            .when(
+                                                item.kind == "placeholder" && !is_prompt_studio,
+                                                |cell| {
+                                                    cell.child(
+                                                        function_semantic_element(
+                                                            FunctionSemanticStatus::PlaceholderNonExecutable {
+                                                                id,
+                                                                identifier: identifier.clone(),
+                                                            },
+                                                        )
+                                                            .text_size(px(10.0))
+                                                            .text_color(theme.muted_foreground)
+                                                            .child("不可执行"),
                                                     )
-                                                        .text_size(px(10.0))
-                                                        .text_color(theme.muted_foreground)
-                                                        .child("不可执行"),
-                                                )
-                                            }),
+                                                },
+                                            ),
                                     )
                                     .child(
                                         list_actions(Some(col_widths[4]), style)
@@ -1450,6 +1534,10 @@ impl Render for FunctionView {
                     ),
             )
             .when(self.show_form, |this| {
+                let is_prompt_studio = self.is_prompt_studio;
+                // 占位函数的「不可执行」提示只属于桌面版。
+                let show_schema_only_hint =
+                    self.form_kind == "placeholder" && !is_prompt_studio;
                 let identifier_input = self.identifier_input.clone().unwrap();
                 let name_input = self.name_input.clone().unwrap();
                 let description_input = self.description_input.clone().unwrap();
@@ -1543,16 +1631,20 @@ impl Render for FunctionView {
                                             "添加函数"
                                         }),
                                 )
-                                .child(form_field(
-                                    "Identifier *",
-                                    identifier_input,
-                                    "FUNCTION_IDENTIFIER",
-                                    identifier_focused.then_some("FUNCTION_IDENTIFIER_FOCUSED"),
-                                    Some(format!(
-                                        "FUNCTION_IDENTIFIER_VALUE-{current_identifier}"
-                                    )),
-                                    theme,
-                                ))
+                                // Prompt Studio 的名称即标识，Identifier 字段不展示。
+                                .when(!is_prompt_studio, |form| {
+                                    form.child(form_field(
+                                        "Identifier *",
+                                        identifier_input,
+                                        "FUNCTION_IDENTIFIER",
+                                        identifier_focused
+                                            .then_some("FUNCTION_IDENTIFIER_FOCUSED"),
+                                        Some(format!(
+                                            "FUNCTION_IDENTIFIER_VALUE-{current_identifier}"
+                                        )),
+                                        theme,
+                                    ))
+                                })
                                 .child(form_field(
                                     "名称 *",
                                     name_input,
@@ -1569,7 +1661,8 @@ impl Render for FunctionView {
                                     None,
                                     theme,
                                 ))
-                                .child(
+                                // Prompt Studio 里函数只可能是占位类型，不展示 Kind 选择器。
+                                .when(!is_prompt_studio, |form| form.child(
                                     selector_field(
                                         "Kind *",
                                         kind_label,
@@ -1614,10 +1707,8 @@ impl Render for FunctionView {
                                     ))
                                     .when(self.kind_select_open, |field| {
                                         field.child(selector_menu(theme).children(
-                                            [
-                                                ("custom", "自定义函数"),
-                                                ("placeholder", "占位"),
-                                            ]
+                                            // 桌面版不再提供「占位」类型。
+                                            [("custom", "自定义函数")]
                                                 .into_iter()
                                                 .map(|(kind, label)| {
                                                     selector_option(
@@ -1653,7 +1744,7 @@ impl Render for FunctionView {
                                                 }),
                                         ))
                                     }),
-                                )
+                                ))
                                 .when(self.form_kind == "custom", |form| {
                                     form.child(
                                         selector_field(
@@ -1943,7 +2034,8 @@ impl Render for FunctionView {
                                         )
                                     }),
                                 )
-                                .when(self.form_kind == "placeholder", |form| {
+                                // Prompt Studio 里所有函数都是占位，不必再提示不可执行。
+                                .when(show_schema_only_hint, |form| {
                                     form.child(
                                         function_semantic_element(
                                             FunctionSemanticStatus::PlaceholderSchemaOnly,
@@ -2671,6 +2763,36 @@ impl Render for FunctionView {
                 )
                 )
             })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{default_function_kind, prompt_studio_identifier};
+
+    #[test]
+    fn prompt_studio_name_becomes_the_identifier_only_when_it_is_a_valid_identifier() {
+        assert_eq!(
+            prompt_studio_identifier("  ps_tool  "),
+            Some("ps_tool".to_string())
+        );
+        assert_eq!(
+            prompt_studio_identifier("a-b_1"),
+            Some("a-b_1".to_string())
+        );
+        for rejected in ["", "   ", "带空格 的名称", "中文名称", "dot.name"] {
+            assert_eq!(
+                prompt_studio_identifier(rejected),
+                None,
+                "`{rejected}` must not be accepted as a Function identifier"
+            );
+        }
+    }
+
+    #[test]
+    fn default_kind_is_placeholder_only_in_prompt_studio() {
+        assert_eq!(default_function_kind(true), "placeholder");
+        assert_eq!(default_function_kind(false), "custom");
     }
 }
 

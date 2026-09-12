@@ -71,10 +71,11 @@ pub use models::*;
 pub use mysql_client::MysqlClient;
 pub use skill_store::{SkillInput, SkillRecord, SkillStore, SkillStoreError, SkillStoreErrorKind};
 pub use store::{
-    CorruptionDecision, CorruptionRecoveryReport, CorruptionReport, DatabaseFailureClass,
-    GlobalConfig, OpenOutcome, QuarantineReason, QuarantineRecord, RetryPolicy, RetrySleeper,
-    SidecarKind, SidecarRecord, Store, StoreError, StoreErrorKind, StoreOpenError,
-    StoreOpenErrorKind, StoreOpenFaultInjector, StoreOpenOptions, StoreStartupGate, WriteGate,
+    BuiltinFunctions, CorruptionDecision, CorruptionRecoveryReport, CorruptionReport,
+    DatabaseFailureClass, GlobalConfig, OpenOutcome, QuarantineReason, QuarantineRecord,
+    RetryPolicy, RetrySleeper, SidecarKind, SidecarRecord, Store, StoreError, StoreErrorKind,
+    StoreOpenError, StoreOpenErrorKind, StoreOpenFaultInjector, StoreOpenOptions, StoreStartupGate,
+    WriteGate,
 };
 pub use tag_store::{
     TagConflict, TagFilter, TagInput, TagPage, TagRecord, TagStore, TagStoreError,

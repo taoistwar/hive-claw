@@ -3,7 +3,7 @@
 use crate::config::AppIdentity;
 use crate::datasource::entity_store::Function as DbFunction;
 use crate::datasource::llm_store::{LlmModel, LlmPreset, LlmProvider, LlmStore};
-use crate::datasource::{Crypto, Store};
+use crate::datasource::{Crypto, FunctionKind, Store};
 use crate::ui::management_style::{ActionRole, ManagementStyle};
 use gpui_kit::component::input::{Input, InputEvent, InputState, Textarea, TextareaState};
 use gpui_kit::component::notification::Notification;
@@ -76,6 +76,21 @@ fn valid_model_selection(
             .iter()
             .any(|model| model.id == *selected_model_id)
     })
+}
+
+/// 「从函数管理选择工具」可选的函数集合。
+///
+/// 内置函数是代码拥有、面向桌面版的可执行能力，Prompt Studio 的函数管理里
+/// 没有它们，因此这里也必须保持一致；桌面版保持全量。
+fn selectable_functions(identity: AppIdentity, functions: Vec<DbFunction>) -> Vec<DbFunction> {
+    if identity == AppIdentity::NGY_PROMPT_STUDIO {
+        functions
+            .into_iter()
+            .filter(|function| function.kind != FunctionKind::Builtin.as_str())
+            .collect()
+    } else {
+        functions
+    }
 }
 
 /// 把「函数管理」里的一个函数映射成本页使用的 LLM tool 定义。
@@ -651,10 +666,14 @@ impl PromptDebugger {
     /// 避免用户刚在函数管理里改完函数、回到本页却看到旧列表。
     fn reload_available_functions(&mut self, cx: &mut Context<Self>) {
         let store = self.store.read(cx).clone();
+        let identity = self.identity;
         cx.spawn(async move |this, cx| {
-            let available_functions = DbFunction::list(store.pool(), None, 100, 0)
-                .await
-                .unwrap_or_default();
+            let available_functions = selectable_functions(
+                identity,
+                DbFunction::list(store.pool(), None, 100, 0)
+                    .await
+                    .unwrap_or_default(),
+            );
             _ = this.update(cx, |this, cx| {
                 this.available_functions = available_functions;
                 this.style = ManagementStyle::from_theme(cx.theme());
@@ -5661,6 +5680,31 @@ mod tests {
             created_at: String::new(),
             updated_at: String::new(),
         }
+    }
+
+    /// Prompt Studio 的函数管理里没有内置函数，「从函数管理选择工具」也不展示它们。
+    #[test]
+    fn prompt_studio_tool_picker_hides_builtin_functions() {
+        use crate::config::AppIdentity;
+
+        let mut builtin = function(1, "JSON 解析", None);
+        builtin.kind = "builtin".to_string();
+        let user = function(2, "天气查询", None);
+
+        let studio = super::selectable_functions(
+            AppIdentity::NGY_PROMPT_STUDIO,
+            vec![builtin.clone(), user.clone()],
+        );
+        let desktop =
+            super::selectable_functions(AppIdentity::HIVEGUI, vec![builtin, user.clone()]);
+
+        assert_eq!(studio.len(), 1, "Prompt Studio must hide Builtin Functions");
+        assert_eq!(studio[0].id, user.id);
+        assert_eq!(
+            desktop.len(),
+            2,
+            "the desktop picker keeps Builtin Functions"
+        );
     }
 
     #[test]

@@ -41,7 +41,7 @@ use hivegui::datasource::backup::{
 };
 use hivegui::datasource::entity_store::{AgentInput, AgentStore};
 use hivegui::datasource::{
-    Crypto, DatabaseFailureClass, Store, StoreOpenErrorKind, StoreOpenOptions,
+    BuiltinFunctions, Crypto, DatabaseFailureClass, Store, StoreOpenErrorKind, StoreOpenOptions,
 };
 use hivegui::ui::app::open_store_after_restore_recovery;
 use sha2::{Digest, Sha256};
@@ -3366,7 +3366,7 @@ async fn production_startup_replays_restore_before_creating_or_opening_store() {
     let registry_identity = sidecar_file_identity(&registry);
     let unknown_entry_identity = sidecar_file_identity(&unknown_entry);
 
-    let error = open_store_after_restore_recovery(&root)
+    let error = open_store_after_restore_recovery(&root, BuiltinFunctions::Synchronize)
         .await
         .expect_err("ambiguous restore registry must block production Store startup");
     let import_error = error
@@ -3416,7 +3416,7 @@ async fn production_startup_opens_a_clean_root_with_owner_aware_store() {
     let workspace = TestWorkspace::new().expect("workspace");
     let root = workspace.root().join("clean-production-startup-root");
 
-    let store = open_store_after_restore_recovery(&root)
+    let store = open_store_after_restore_recovery(&root, BuiltinFunctions::Synchronize)
         .await
         .expect("clean production root must recover and open");
     let database = root.join("datasources.db");
@@ -8039,9 +8039,10 @@ async fn startup_checkpoints_empty_wal_and_stale_shm_before_opening_store() {
     fs::write(&wal, []).expect("seed empty WAL left by a failed open");
     fs::write(&shm, vec![0_u8; 32 * 1024]).expect("seed stale SHM left by a failed open");
 
-    let reopened = open_store_after_restore_recovery(workspace.root())
-        .await
-        .expect("startup must checkpoint and durably converge cold SQLite sidecars");
+    let reopened =
+        open_store_after_restore_recovery(workspace.root(), BuiltinFunctions::Synchronize)
+            .await
+            .expect("startup must checkpoint and durably converge cold SQLite sidecars");
     reopened
         .list()
         .await

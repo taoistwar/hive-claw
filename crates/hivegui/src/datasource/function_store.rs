@@ -846,6 +846,38 @@ impl FunctionStore {
         transaction.commit().await.map_err(storage_error)?;
         Ok(())
     }
+
+    /// Remove the code-owned Builtin Functions from a pool that must not carry
+    /// them (the Prompt Studio data root).
+    ///
+    /// Rows still referenced by a Tool or Workflow node are kept so the delete
+    /// can never break a relation; the Function search index for every removed
+    /// row is cleaned up inside the same transaction. Returns the number of
+    /// removed Functions.
+    pub(crate) async fn remove_builtins(pool: &Pool<Sqlite>) -> Result<usize, PublicBoundaryError> {
+        let mut transaction = pool.begin().await.map_err(storage_error)?;
+        let removed = sqlx::query_scalar::<_, i64>(
+            "SELECT id FROM functions WHERE kind = 'builtin' \
+             AND id NOT IN (SELECT function_id FROM tools WHERE function_id IS NOT NULL) \
+             AND id NOT IN (SELECT function_id FROM workflow_nodes WHERE function_id IS NOT NULL) \
+             ORDER BY id",
+        )
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(storage_error)?;
+        for id in &removed {
+            delete_entity_search_documents(&mut transaction, "function", &id.to_string())
+                .await
+                .map_err(search_error)?;
+            sqlx::query("DELETE FROM functions WHERE id = ?")
+                .bind(id)
+                .execute(&mut *transaction)
+                .await
+                .map_err(storage_error)?;
+        }
+        transaction.commit().await.map_err(storage_error)?;
+        Ok(removed.len())
+    }
 }
 
 #[derive(Debug)]

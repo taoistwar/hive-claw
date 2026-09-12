@@ -12,7 +12,7 @@ use std::{path::Path, sync::Arc};
 
 use crate::agent::local_agent::LocalAgentRuntime;
 use crate::config::{AppIdentity, Config};
-use crate::datasource::{Store, StoreOpenOptions, backup::RestoreCoordinator};
+use crate::datasource::{BuiltinFunctions, Store, StoreOpenOptions, backup::RestoreCoordinator};
 use crate::datasource::llm_store::LlmStore;
 use crate::runtime::diagnostics::ExecutionEventCollector;
 use crate::runtime::{FoundationRuntimeComposition, LocalExecutionAdapter};
@@ -244,10 +244,18 @@ fn install_app_globals(cx: &mut App, state: HiveGuiAppState) {
 /// Replay every durable restore/retirement state before opening the
 /// owner-aware production Store for `root`.
 ///
+/// `builtin_functions` states whether this data root owns the code-registered
+/// executable Builtin Functions: the desktop database does, the Prompt Studio
+/// database must not (its Function management only manages schema-only
+/// placeholders).
+///
 /// Any ambiguous recovery state or incomplete recovery proof is returned to
 /// the caller before the SQLite database, sidecars, encryption key, or Plugin
 /// root can be created by Store startup.
-pub async fn open_store_after_restore_recovery(root: &Path) -> anyhow::Result<Store> {
+pub async fn open_store_after_restore_recovery(
+    root: &Path,
+    builtin_functions: BuiltinFunctions,
+) -> anyhow::Result<Store> {
     let recovery = RestoreCoordinator::new(root)?.recover_startup().await?;
     anyhow::ensure!(
         recovery.store_may_open()
@@ -258,7 +266,10 @@ pub async fn open_store_after_restore_recovery(root: &Path) -> anyhow::Result<St
             && recovery.write_gate_is_open(),
         "restore startup replay did not prove every Store-open invariant"
     );
-    Ok(Store::open_local(StoreOpenOptions::for_root(root)).await?)
+    Ok(Store::open_local(
+        StoreOpenOptions::for_root(root).with_builtin_functions(builtin_functions),
+    )
+    .await?)
 }
 
 /// Open the owner-aware local [`Store`] for `root`, replay interrupted plugin
@@ -266,9 +277,13 @@ pub async fn open_store_after_restore_recovery(root: &Path) -> anyhow::Result<St
 ///
 /// Both HiveGUI entry points share this exact bootstrap so the Store/LlmStore
 /// wiring cannot drift between the full desktop app ([`run`]) and the focused
-/// prompt-engineering binary ([`run_prompt_studio`]).
-pub async fn bootstrap_stores(root: &Path) -> anyhow::Result<(Store, LlmStore)> {
-    let store = open_store_after_restore_recovery(root).await?;
+/// prompt-engineering binary ([`run_prompt_studio`]): the only per-application
+/// difference is the `builtin_functions` policy.
+pub async fn bootstrap_stores(
+    root: &Path,
+    builtin_functions: BuiltinFunctions,
+) -> anyhow::Result<(Store, LlmStore)> {
+    let store = open_store_after_restore_recovery(root, builtin_functions).await?;
 
     // T079 ③ startup replay: recover any plugin install operation interrupted
     // by a crash, then drain pending artifact GC so orphaned staging bytes and
@@ -305,9 +320,12 @@ pub fn run(config: Config) -> anyhow::Result<()> {
     let cfg = Arc::new(config);
 
     // Shared bootstrap: open the Store, replay plugin recovery + artifact GC,
-    // and migrate the LLM tables.
-    let (store, llm_store) =
-        tokio::runtime::Handle::current().block_on(bootstrap_stores(&Store::default_db_path()))?;
+    // and migrate the LLM tables. The desktop database owns the executable
+    // Builtin Functions.
+    let (store, llm_store) = tokio::runtime::Handle::current().block_on(bootstrap_stores(
+        &Store::default_db_path(),
+        BuiltinFunctions::Synchronize,
+    ))?;
     let app = gpui_kit::application().with_assets(gpui_kit_assets::Assets);
 
     // Foundation runtime composition: build the local-execution
@@ -446,8 +464,11 @@ const PROMPT_STUDIO_SECTIONS: &[PromptStudioSection] = &[
 /// the exclusive owner lock on `{root}/datasources.db.lock` no longer stops
 /// both binaries from running at the same time.
 pub fn run_prompt_studio(_config: Config) -> anyhow::Result<()> {
-    let (store, llm_store) = tokio::runtime::Handle::current()
-        .block_on(bootstrap_stores(&Store::prompt_studio_db_path()))?;
+    // PRD §函数管理：Prompt Studio 的数据根不写入内置函数（桌面版仍然写入）。
+    let (store, llm_store) = tokio::runtime::Handle::current().block_on(bootstrap_stores(
+        &Store::prompt_studio_db_path(),
+        BuiltinFunctions::Absent,
+    ))?;
     // The icon rail uses names outside gpui-component's default icon bundle
     // (`default-icons.txt`), so this entry point registers the full Lucide
     // catalog instead. `Assets` only embeds that default subset and would make
@@ -532,7 +553,7 @@ impl PromptStudioRoot {
             view.identity = AppIdentity::NGY_PROMPT_STUDIO;
             view
         });
-        let function_view = cx.new(|cx| FunctionView::new(store.clone(), cx));
+        let function_view = cx.new(|cx| FunctionView::new_prompt_studio(store.clone(), cx));
         let category_view = cx.new(|cx| CategoryView::new(store.clone(), cx));
         Self {
             active: 0,

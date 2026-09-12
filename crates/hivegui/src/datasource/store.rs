@@ -507,6 +507,22 @@ pub(crate) fn store_already_owned(database_path: &Path) -> bool {
     }
 }
 
+/// Whether a data root owns the code-registered Builtin Function registry.
+///
+/// The full desktop application synchronizes the four executable Builtin
+/// Functions into its database. The focused prompt-engineering application
+/// (Ngy Prompt Studio) must not carry them at all: its Function management only
+/// manages schema-only Placeholder Functions, and the Builtin rows are an
+/// implementation detail of the desktop runtime.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinFunctions {
+    /// Synchronize the immutable Builtin registry into this database on open.
+    Synchronize,
+    /// Never write Builtin Functions into this database, and remove rows left
+    /// behind by an older build.
+    Absent,
+}
+
 /// Open-time configuration for [`Store::open_local`]. Mirrors the
 /// shape that integration tests use to drive the storage layer in
 /// isolation (one database file, one plugin artifact root).
@@ -518,6 +534,8 @@ pub struct StoreOpenOptions {
     /// Directory used to materialise plugin artifacts (manifests,
     /// sha256 sidecars, etc.).
     pub plugin_root: PathBuf,
+    /// Builtin Function policy for this data root.
+    builtin_functions: BuiltinFunctions,
     /// Optional query-count observer wired into the new store.
     observer: Option<QueryCountObserver>,
     /// Optional fault injector for open-time failures.
@@ -533,6 +551,7 @@ impl Default for StoreOpenOptions {
         Self {
             database_path: PathBuf::new(),
             plugin_root: PathBuf::new(),
+            builtin_functions: BuiltinFunctions::Synchronize,
             observer: None,
             fault_injector: None,
             retry_policy: None,
@@ -560,11 +579,22 @@ impl StoreOpenOptions {
         Self {
             database_path: database_path.into(),
             plugin_root: plugin_root.into(),
+            builtin_functions: BuiltinFunctions::Synchronize,
             observer: None,
             fault_injector: None,
             retry_policy: None,
             retry_sleeper: None,
         }
+    }
+
+    /// Configure whether this data root owns the Builtin Function registry.
+    ///
+    /// Defaults to [`BuiltinFunctions::Synchronize`]; the Prompt Studio root
+    /// uses [`BuiltinFunctions::Absent`] so its database never carries the
+    /// code-owned Builtin rows.
+    pub fn with_builtin_functions(mut self, builtin_functions: BuiltinFunctions) -> Self {
+        self.builtin_functions = builtin_functions;
+        self
     }
 
     /// Attach a query-count observer. The observer is cloned into
@@ -1588,6 +1618,7 @@ impl Store {
         let StoreOpenOptions {
             database_path,
             plugin_root,
+            builtin_functions,
             observer,
             fault_injector,
             retry_policy,
@@ -1660,7 +1691,7 @@ impl Store {
                 continue;
             }
 
-            match Self::try_open_once(&database_path, &plugin_root).await {
+            match Self::try_open_once(&database_path, &plugin_root, builtin_functions).await {
                 Ok(mut inner) => {
                     inner.restore_owner = std::sync::Mutex::new(Some(restore_owner));
                     inner.observer = observer.clone();
@@ -1696,6 +1727,7 @@ impl Store {
     async fn try_open_once(
         database_path: &Path,
         plugin_root: &Path,
+        builtin_functions: BuiltinFunctions,
     ) -> Result<StoreInner, StoreOpenError> {
         let database_path_buf = database_path.to_path_buf();
         if let Err(write_gate_error) = super::backup::ensure_store_write_open(database_path) {
@@ -1783,15 +1815,28 @@ impl Store {
                     .with_cause(register_error.to_string()),
             );
         }
-        if let Err(synchronize_error) =
-            super::function_store::FunctionStore::synchronize_builtins(&pool).await
-        {
-            return Err(StoreOpenError::new(
-                StoreOpenErrorKind::Io,
-                Some(database_path_buf.clone()),
-            )
-            .with_failure_class(DatabaseFailureClass::Persistent)
-            .with_cause(synchronize_error.to_string()));
+        match builtin_functions {
+            BuiltinFunctions::Synchronize => {
+                if let Err(synchronize_error) =
+                    super::function_store::FunctionStore::synchronize_builtins(&pool).await
+                {
+                    return Err(StoreOpenError::new(
+                        StoreOpenErrorKind::Io,
+                        Some(database_path_buf.clone()),
+                    )
+                    .with_failure_class(DatabaseFailureClass::Persistent)
+                    .with_cause(synchronize_error.to_string()));
+                }
+            }
+            BuiltinFunctions::Absent => {
+                // 该数据根不承载内置函数：清掉旧版本写进去的行。清理失败不阻止
+                // 打开（函数管理与工具选择器本来也不会展示内置函数）。
+                if let Err(cleanup_error) =
+                    super::function_store::FunctionStore::remove_builtins(&pool).await
+                {
+                    tracing::warn!(error = %cleanup_error, "移除内置函数失败");
+                }
+            }
         }
 
         let key_dir = database_path.parent().unwrap_or(Path::new("."));

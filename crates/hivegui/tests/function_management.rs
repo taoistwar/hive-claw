@@ -40,7 +40,7 @@ use hivegui::datasource::{
     },
     plugin_manifest::validate_manifest,
     query_plan::{QueryDialect, production_query_catalog},
-    store::{Store, StoreOpenOptions},
+    store::{BuiltinFunctions, Store, StoreOpenOptions},
     validation::{PublicBoundaryError, PublicErrorEnvelope},
 };
 use sqlx::{Pool, Row, Sqlite};
@@ -68,6 +68,16 @@ async fn open_v4_store(workspace: &TestWorkspace) -> Store {
     ))
     .await
     .expect("open real v4 Store")
+}
+
+/// Open the same database with the Prompt Studio Builtin policy.
+async fn open_prompt_studio_store(workspace: &TestWorkspace) -> Store {
+    Store::open_local(
+        StoreOpenOptions::new(workspace.database_path(), workspace.plugin_root())
+            .with_builtin_functions(BuiltinFunctions::Absent),
+    )
+    .await
+    .expect("open Prompt Studio root")
 }
 
 async fn seed_known_network_http_capability(pool: &Pool<Sqlite>) {
@@ -596,6 +606,79 @@ async fn function_store_create_is_durable_and_duplicate_is_stable_across_instanc
             && visible_after_duplicate == 1
             && visible_after_repeated_duplicate == 1,
         "FunctionStore::create/get must share the supplied v4 pool and repeated duplicates across fresh instances must return the same safe public conflict/zero-modification; first={first_result:?}, visible_after_first={visible_after_first}, readable_after_reopen={readable_after_reopen:?}, duplicate={duplicate:?}, visible_after_duplicate={visible_after_duplicate}, repeated_duplicate={repeated_duplicate:?}, visible_after_repeated_duplicate={visible_after_repeated_duplicate}"
+    );
+}
+
+/// PRD §函数管理：内置函数只属于桌面版数据根。Prompt Studio 的数据根既不会写入
+/// 内置函数，也会清掉旧版本同步进去的行；用户自己的函数不受影响。
+#[tokio::test(flavor = "current_thread")]
+async fn prompt_studio_root_never_carries_builtin_functions() {
+    let workspace = TestWorkspace::new().expect("test workspace");
+
+    // 桌面版策略：4 个内置函数写进库中，同时准备一个用户函数。
+    let desktop_store = open_v4_store(&workspace).await;
+    let desktop_snapshot = function_snapshot(desktop_store.pool()).await;
+    let desktop_builtins = desktop_snapshot
+        .iter()
+        .filter(|row| row.kind == "builtin")
+        .count();
+    let function_store =
+        FunctionStore::new(desktop_store.pool().clone()).expect("Function Store fixture");
+    create_placeholder_function(
+        &function_store,
+        "ps_kept_placeholder",
+        "PS kept placeholder",
+    )
+    .await;
+    drop(function_store);
+    drop(desktop_store);
+
+    // Prompt Studio 策略：内置函数被清除，用户函数保留，索引不留孤儿文档。
+    let studio_store = open_prompt_studio_store(&workspace).await;
+    let studio_snapshot = function_snapshot(studio_store.pool()).await;
+    let studio_builtins = studio_snapshot
+        .iter()
+        .filter(|row| row.kind == "builtin")
+        .count();
+    let kept_user_function = studio_snapshot
+        .iter()
+        .any(|row| row.identifier == "ps_kept_placeholder");
+    let orphaned_search_documents: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM search_documents WHERE entity_type = 'function' \
+         AND entity_key NOT IN (SELECT CAST(id AS TEXT) FROM functions)",
+    )
+    .fetch_one(studio_store.pool())
+    .await
+    .expect("count orphaned Function search documents");
+    drop(studio_store);
+
+    // 再次以 Prompt Studio 策略打开：内置函数不会被重新写入。
+    let reopened_store = open_prompt_studio_store(&workspace).await;
+    let reopened_builtins = function_snapshot(reopened_store.pool())
+        .await
+        .iter()
+        .filter(|row| row.kind == "builtin")
+        .count();
+
+    assert_eq!(
+        desktop_builtins, 4,
+        "the desktop data root must own the 4 Builtin Functions"
+    );
+    assert_eq!(
+        studio_builtins, 0,
+        "a Prompt Studio data root must not carry Builtin Functions"
+    );
+    assert!(
+        kept_user_function,
+        "removing Builtin Functions must not touch user Functions"
+    );
+    assert_eq!(
+        orphaned_search_documents, 0,
+        "removing Builtin Functions must clean up their search documents"
+    );
+    assert_eq!(
+        reopened_builtins, 0,
+        "reopening a Prompt Studio root must not write Builtin Functions"
     );
 }
 

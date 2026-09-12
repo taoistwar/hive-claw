@@ -786,7 +786,25 @@ fn source_query_plan_registrations(paths: Vec<PathBuf>) -> Vec<SourceQueryPlanRe
 }
 
 fn assert_filter_and_join_queries_are_registered(path: &Path, lines: &[&str]) {
+    // 测试模块里的内联 SQL 是夹具断言，不是生产语句：query-plan 契约只覆盖
+    // 生产代码，因此跳过 `#[cfg(test)] mod ... {` 到该模块顶层 `}` 之间的行。
+    let mut skipping_test_module = false;
     for (index, line) in lines.iter().enumerate() {
+        if skipping_test_module {
+            if line.starts_with('}') {
+                skipping_test_module = false;
+            }
+            continue;
+        }
+        if line.trim_start().starts_with("#[cfg(test)]")
+            && lines
+                .get(index + 1)
+                .is_some_and(|next| next.starts_with("mod "))
+        {
+            skipping_test_module = true;
+            continue;
+        }
+
         let query_api_or_sql_literal = [
             "query!(",
             "query_as!(",

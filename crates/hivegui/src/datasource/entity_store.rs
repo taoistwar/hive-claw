@@ -1437,6 +1437,220 @@ impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for Category {
     }
 }
 
+// === PromptTemplate CRUD ===
+/// 「提示词管理」里的可复用提示词。
+///
+/// 提示词只保存文本本身：调试页可以把它的 `content` 填进任意一条 message，
+/// 也可以完全不用库里的内容直接手输。写入校验复用 name / content /
+/// description 三个通用校验器（content 非空、≤1MB）。
+#[derive(Debug, Clone)]
+pub struct PromptTemplate {
+    pub id: i64,
+    pub name: String,
+    pub content: String,
+    pub description: Option<String>,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+impl PromptTemplate {
+    pub async fn list(
+        pool: &Pool<Sqlite>,
+        search: Option<String>,
+        limit: i64,
+        offset: i64,
+    ) -> Result<Vec<PromptTemplate>> {
+        let prompts = if let Some(s) = search {
+            sqlx::query_as::<_, PromptTemplate>(
+                "SELECT id, name, content, description, created_at, updated_at FROM prompts \
+                 WHERE name LIKE ? OR content LIKE ? ORDER BY updated_at DESC, id DESC \
+                 LIMIT ? OFFSET ?",
+            )
+            .bind(format!("%{}%", s))
+            .bind(format!("%{}%", s))
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(pool)
+            .await?
+        } else {
+            sqlx::query_as::<_, PromptTemplate>(
+                "SELECT id, name, content, description, created_at, updated_at FROM prompts \
+                 ORDER BY updated_at DESC, id DESC LIMIT ? OFFSET ?",
+            )
+            .bind(limit)
+            .bind(offset)
+            .fetch_all(pool)
+            .await?
+        };
+        Ok(prompts)
+    }
+
+    pub async fn count(pool: &Pool<Sqlite>, search: Option<String>) -> Result<i64> {
+        let count = if let Some(s) = search {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM prompts WHERE name LIKE ? OR content LIKE ?",
+            )
+            .bind(format!("%{}%", s))
+            .bind(format!("%{}%", s))
+            .fetch_one(pool)
+            .await?
+        } else {
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM prompts")
+                .fetch_one(pool)
+                .await?
+        };
+        Ok(count)
+    }
+
+    pub async fn get(pool: &Pool<Sqlite>, id: i64) -> Result<Option<PromptTemplate>> {
+        let prompt = sqlx::query_as::<_, PromptTemplate>(
+            "SELECT id, name, content, description, created_at, updated_at FROM prompts WHERE id = ?",
+        )
+        .bind(id)
+        .fetch_optional(pool)
+        .await?;
+        Ok(prompt)
+    }
+
+    pub async fn create(
+        pool: &Pool<Sqlite>,
+        name: String,
+        content: String,
+        description: Option<String>,
+    ) -> Result<PromptTemplate> {
+        validate_name(&name)?;
+        validate_content(&content)?;
+        if let Some(ref desc) = description {
+            validate_description(desc)?;
+        }
+
+        let start = Instant::now();
+        let now = Utc::now().to_rfc3339();
+        let id = sqlx::query_scalar::<_, i64>(
+            "INSERT INTO prompts (name, content, description, created_at, updated_at) \
+             VALUES (?, ?, ?, ?, ?) RETURNING id",
+        )
+        .bind(&name)
+        .bind(&content)
+        .bind(&description)
+        .bind(&now)
+        .bind(&now)
+        .fetch_one(pool)
+        .await?;
+
+        tracing::info!(
+            entity = "prompt",
+            op = "create",
+            id = id,
+            duration_ms = start.elapsed().as_millis(),
+            "Prompt created"
+        );
+
+        PromptTemplate::get(pool, id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Failed to retrieve created prompt"))
+    }
+
+    pub async fn update(
+        pool: &Pool<Sqlite>,
+        id: i64,
+        name: String,
+        content: String,
+        description: Option<String>,
+    ) -> Result<PromptTemplate> {
+        validate_name(&name)?;
+        validate_content(&content)?;
+        if let Some(ref desc) = description {
+            validate_description(desc)?;
+        }
+
+        let start = Instant::now();
+        let now = Utc::now().to_rfc3339();
+        let affected = sqlx::query(
+            "UPDATE prompts SET name = ?, content = ?, description = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(&name)
+        .bind(&content)
+        .bind(&description)
+        .bind(&now)
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+        if affected == 0 {
+            return Err(anyhow::anyhow!("提示词不存在（可能已被删除）"));
+        }
+
+        tracing::info!(
+            entity = "prompt",
+            op = "update",
+            id = id,
+            duration_ms = start.elapsed().as_millis(),
+            "Prompt updated"
+        );
+
+        PromptTemplate::get(pool, id)
+            .await?
+            .ok_or_else(|| anyhow::anyhow!("Prompt not found"))
+    }
+
+    pub async fn delete(pool: &Pool<Sqlite>, id: i64) -> Result<()> {
+        let start = Instant::now();
+        sqlx::query("DELETE FROM prompts WHERE id = ?")
+            .bind(id)
+            .execute(pool)
+            .await?;
+        tracing::info!(
+            entity = "prompt",
+            op = "delete",
+            id = id,
+            duration_ms = start.elapsed().as_millis(),
+            "Prompt deleted"
+        );
+        Ok(())
+    }
+}
+
+// 实现 sqlx::FromRow for PromptTemplate
+impl sqlx::FromRow<'_, sqlx::sqlite::SqliteRow> for PromptTemplate {
+    fn from_row(row: &sqlx::sqlite::SqliteRow) -> Result<Self, sqlx::Error> {
+        Ok(PromptTemplate {
+            id: row.try_get("id")?,
+            name: row.try_get("name")?,
+            content: row.try_get("content")?,
+            description: row.try_get("description")?,
+            created_at: row.try_get("created_at")?,
+            updated_at: row.try_get("updated_at")?,
+        })
+    }
+}
+
+/// 幂等创建「提示词管理」的 `prompts` 表。
+///
+/// 已被标记为 v4 的旧库不会重跑 `migrate_to_current` 的 `create_or_upgrade_to_v4`，
+/// 因此打开路径（`Store::new` / `try_open_once` / `open_existing`）必须显式补建
+/// 这张表，否则提示词管理与调试页的提示词选择会报 "no such table: prompts"。
+pub async fn ensure_prompt_tables(pool: &Pool<Sqlite>) -> Result<()> {
+    sqlx::query(
+        r#"
+        CREATE TABLE IF NOT EXISTS prompts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            content TEXT NOT NULL,
+            description TEXT,
+            created_at TEXT NOT NULL,
+            updated_at TEXT NOT NULL
+        )
+        "#,
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_prompts_name ON prompts(name)")
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
 // === Capability CRUD ===
 /// Registers the desktop runtime capability catalog without deleting custom entries.
 pub async fn register_runtime_capabilities(pool: &Pool<Sqlite>) -> Result<()> {
@@ -4995,6 +5209,9 @@ async fn init_workflow_graph_tables(pool: &Pool<Sqlite>) -> Result<()> {
 
 /// 运行数据库迁移
 pub async fn run_migrations(pool: &Pool<Sqlite>) -> Result<()> {
+    // 无条件先补建后加的实体表（早退分支不会执行下面的迁移脚本）。
+    ensure_prompt_tables(pool).await?;
+
     let current_version = get_current_version(pool).await?;
 
     tracing::info!(

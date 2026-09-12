@@ -2559,7 +2559,7 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     // for pre-existing v4 databases created before this column landed. SQLite
     // does not support `ADD COLUMN IF NOT EXISTS`, so we read the current
     // schema to decide whether the column already exists.
-    // query-plan: id=t012.global_configs.deletable_probe; owner_phase=US12; activation_task=T012
+    // query-plan: id=t012.global_configs.deletable_probe; owner_phase=migrations; activation_task=T012M
     let global_configs_columns =
         sqlx::query("SELECT name FROM pragma_table_info('global_configs')")
             .fetch_all(&mut **executor)
@@ -2939,6 +2939,22 @@ async fn create_or_upgrade_to_v4(executor: &mut sqlx::Transaction<'_, Sqlite>) -
     .execute(&mut **executor)
     .await
     .context("create functions table")?;
+
+    // 提示词管理（V4 之后新增）。已被标记 v4 的旧库不会走到这里，
+    // 打开路径另有 `entity_store::ensure_prompt_tables` 幂等补建。
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS prompts (\
+            id INTEGER PRIMARY KEY AUTOINCREMENT, \
+            name TEXT NOT NULL, \
+            content TEXT NOT NULL, \
+            description TEXT, \
+            created_at TEXT NOT NULL, \
+            updated_at TEXT NOT NULL\
+        )",
+    )
+    .execute(&mut **executor)
+    .await
+    .context("create prompts table")?;
 
     sqlx::query(
         "CREATE TABLE IF NOT EXISTS workflows (\
@@ -4200,6 +4216,7 @@ async fn migrate_legacy_workflow_nodes(executor: &mut sqlx::Transaction<'_, Sqli
 async fn has_exact_legacy_v4_search_schema(
     executor: &mut sqlx::Transaction<'_, Sqlite>,
 ) -> Result<bool> {
+    // query-plan: id=t012.migrations.legacy_v4_search_schema; owner_phase=migrations; activation_task=T012M
     let rows = sqlx::query(
         "SELECT name, sql FROM sqlite_schema \
          WHERE name IN (\
@@ -4312,6 +4329,7 @@ async fn replace_exact_empty_legacy_plugin_ledger(
         .fetch_one(&mut **executor)
         .await
         .context("count historical plugin_artifact_gc rows")?;
+    // query-plan: id=t012.migrations.plugin_ledger_schema_indexes; owner_phase=migrations; activation_task=T012M
     let extra_schema: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM sqlite_schema \
          WHERE tbl_name IN ('plugin_artifact_operations', 'plugin_artifact_gc') \

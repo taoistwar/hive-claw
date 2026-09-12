@@ -1574,12 +1574,16 @@ fn close_function_visual_window(visual: &mut VisualTestContext) {
 }
 
 fn settle_function_selector(visual: &mut VisualTestContext, selector: &'static str) -> bool {
-    for _ in 0..16 {
+    // 行出现要等异步列表加载（SQLite 查询 + 重绘）完成；并行跑整套
+    // accessibility 时 16×1ms 的预算不够，会出现「Builtin row must expose a
+    // stable Test selector / Function row must expose FUNCTION_EDIT」这类随机
+    // 失败。等待上限与同套件的 `settle_function_selector_absent` 对齐。
+    for _ in 0..200 {
         visual.run_until_parked();
         if visual.debug_bounds(selector).is_some() {
             return true;
         }
-        std::thread::sleep(std::time::Duration::from_millis(1));
+        std::thread::sleep(std::time::Duration::from_millis(5));
     }
     false
 }
@@ -2575,7 +2579,19 @@ fn close_workflow_visual_window(
 ) {
     visual.update(|window, _| window.remove_window());
     visual.run_until_parked();
-    runtime.block_on(store.pool().close());
+    // 同 `close_tool_visual_window`：先驱动挂起的异步查询归还连接，再给
+    // `close()` 一个硬上限，避免并行跑整套 accessibility 时卡死或 panic。
+    for _ in 0..200 {
+        if store.pool().num_idle() >= store.pool().size() as usize {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        visual.run_until_parked();
+    }
+    let _ = runtime.block_on(tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        store.pool().close(),
+    ));
     drop(store);
 }
 
@@ -2659,7 +2675,22 @@ fn close_tool_visual_window(
 ) {
     visual.update(|window, _| window.remove_window());
     visual.run_until_parked();
-    runtime.block_on(store.pool().close());
+    // 视图里挂起的异步查询可能还握着 SQLite 连接，而 GPUI 执行器只在本线程被
+    // 驱动：此时 `close()` 会一直等下去（整套 accessibility 并行跑时就会卡死），
+    // 连接也可能晚于运行时销毁才归还而 panic（"this functionality requires a
+    // Tokio context"）。先把挂起任务跑完、等连接回到池里，再给 `close()` 一个
+    // 硬上限兜底。
+    for _ in 0..200 {
+        if store.pool().num_idle() >= store.pool().size() as usize {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        visual.run_until_parked();
+    }
+    let _ = runtime.block_on(tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        store.pool().close(),
+    ));
     drop(store);
 }
 

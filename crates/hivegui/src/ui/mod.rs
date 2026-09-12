@@ -16,6 +16,7 @@ pub mod management_style;
 pub mod migration_recovery_view;
 pub mod plugin_view;
 pub mod prompt_debugger;
+pub mod prompt_library_view;
 pub mod settings_view;
 pub mod sidebar_nav;
 pub mod skill_view;

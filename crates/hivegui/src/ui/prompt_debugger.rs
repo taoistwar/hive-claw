@@ -2,6 +2,7 @@
 
 use crate::config::AppIdentity;
 use crate::datasource::entity_store::Function as DbFunction;
+use crate::datasource::entity_store::PromptTemplate as DbPromptTemplate;
 use crate::datasource::llm_store::{LlmModel, LlmPreset, LlmProvider, LlmStore};
 use crate::datasource::{Crypto, FunctionKind, Store};
 use crate::ui::management_style::{ActionRole, ManagementStyle};
@@ -76,6 +77,14 @@ fn valid_model_selection(
             .iter()
             .any(|model| model.id == *selected_model_id)
     })
+}
+
+/// 本页是否提供「选择提示词」入口（提示词管理里的提示词）。
+///
+/// 只有 Ngy Prompt Studio 有「提示词管理」分区；桌面版不暴露这个入口，否则
+/// 用户在调试页点开的是一个永远不会出现条目的选择器。
+fn prompt_library_available(identity: AppIdentity) -> bool {
+    identity == AppIdentity::NGY_PROMPT_STUDIO
 }
 
 /// 「从函数管理选择工具」可选的函数集合。
@@ -312,6 +321,16 @@ pub struct PromptDebugger {
     collapsed_messages: HashMap<u64, bool>,
     editing_messages: HashMap<u64, bool>,
     message_inputs: HashMap<u64, Entity<TextareaState>>,
+    /// 「选择提示词」选择器当前服务的消息 id（`None` = 未打开）。
+    ///
+    /// 提示词来自「提示词管理」（`prompts` 表）：选中后把内容填进这条 message 的
+    /// 输入框，用户仍可继续手输/改写，也可以完全不选直接输入。
+    prompt_picker_target: Option<u64>,
+    /// 提示词管理里的提示词（每次打开选择器重新拉取）。
+    available_prompts: Vec<DbPromptTemplate>,
+    prompt_picker_search: String,
+    prompt_picker_search_input: Option<Entity<InputState>>,
+    prompt_picker_scroll: ScrollHandle,
     // 执行历史
     execution_history: Vec<ExecutionRecord>,
     next_record_id: u64,
@@ -452,6 +471,11 @@ impl PromptDebugger {
             collapsed_messages: HashMap::new(),
             editing_messages: HashMap::new(),
             message_inputs: HashMap::new(),
+            prompt_picker_target: None,
+            available_prompts: vec![],
+            prompt_picker_search: String::new(),
+            prompt_picker_search_input: None,
+            prompt_picker_scroll: ScrollHandle::default(),
             execution_history: vec![],
             next_record_id: 1,
             selected_record_ids: HashSet::new(),
@@ -684,6 +708,77 @@ impl PromptDebugger {
             });
         })
         .detach();
+    }
+
+    /// 加载「提示词管理」里的提示词，供本页填进 message。
+    ///
+    /// 每次打开选择器都重新拉取：本视图是长生命周期视图，用户可能刚在
+    /// 「提示词管理」里新增/改过内容。
+    fn reload_available_prompts(&mut self, cx: &mut Context<Self>) {
+        let store = self.store.read(cx).clone();
+        cx.spawn(async move |this, cx| {
+            let available_prompts = DbPromptTemplate::list(store.pool(), None, 200, 0)
+                .await
+                .unwrap_or_default();
+            _ = this.update(cx, |this, cx| {
+                this.available_prompts = available_prompts;
+                cx.notify();
+            });
+        })
+        .detach();
+    }
+
+    /// 打开/关闭某个 message 的「选择提示词」选择器。
+    fn toggle_prompt_picker(&mut self, msg_id: u64, window: &mut Window, cx: &mut Context<Self>) {
+        // 桌面版没有提示词管理，入口本就不渲染；这里再兜一层。
+        if !prompt_library_available(self.identity) {
+            return;
+        }
+        if self.prompt_picker_target == Some(msg_id) {
+            self.prompt_picker_target = None;
+            cx.notify();
+            return;
+        }
+        self.prompt_picker_target = Some(msg_id);
+        self.prompt_picker_search.clear();
+        if let Some(input) = self.prompt_picker_search_input.clone() {
+            input.update(cx, |state, cx| state.set_value("", window, cx));
+        }
+        self.reload_available_prompts(cx);
+        cx.notify();
+    }
+
+    /// 把选中的提示词内容填进目标 message 的输入框。
+    ///
+    /// 只覆盖输入框内容，不直接落库：用户仍可继续编辑，点「保存」才写回
+    /// `DebugMessage.content`（与直接手输完全同一条路径）。
+    fn apply_prompt_to_message(
+        &mut self,
+        prompt_id: i64,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(msg_id) = self.prompt_picker_target else {
+            return;
+        };
+        let Some(content) = self
+            .available_prompts
+            .iter()
+            .find(|prompt| prompt.id == prompt_id)
+            .map(|prompt| prompt.content.clone())
+        else {
+            return;
+        };
+        // 目标 message 可能已被删除（右上角 × ），此时静默关闭选择器。
+        if !self.messages.iter().any(|message| message.id == msg_id) {
+            self.prompt_picker_target = None;
+            cx.notify();
+            return;
+        }
+        let input = self.get_message_input(msg_id, window, cx);
+        input.update(cx, |state, cx| state.set_value(content, window, cx));
+        self.prompt_picker_target = None;
+        cx.notify();
     }
 
     /// 懒初始化 Preset 下拉列表（需要 &mut Window）
@@ -1826,6 +1921,7 @@ fn message_card(
     collapsed: bool,
     editing: bool,
     input: Option<Entity<TextareaState>>,
+    prompt_picker_enabled: bool,
 ) -> impl IntoElement {
     let msg_id = msg.id;
     let role = msg.role;
@@ -1891,6 +1987,10 @@ fn message_card(
                             div()
                                 .cursor(CursorStyle::PointingHand)
                                 .hover(|s| s.opacity(0.7))
+                                .debug_selector({
+                                    let id = msg_id;
+                                    move || format!("PROMPT_MSG_EDIT-{id}")
+                                })
                                 .child(Icon::new(edit_icon).xsmall())
                                 .on_mouse_down(MouseButton::Left, {
                                     let entity = entity.clone();
@@ -1981,26 +2081,68 @@ fn message_card(
                     .gap(px(6.0))
                     .child(div().w_full().child(Textarea::new(&input_state)))
                     .child(
-                        div().flex().justify_end().gap(px(6.0)).child(
-                            div()
-                                .px(px(8.0))
-                                .py(px(4.0))
-                                .bg(style.action(ActionRole::Main).background)
-                                .rounded(px(4.0))
-                                .text_color(style.action(ActionRole::Main).foreground)
-                                .cursor(CursorStyle::PointingHand)
-                                .hover(|s| s.opacity(0.8))
-                                .child(Icon::new(IconName::Check).xsmall())
-                                .on_mouse_down(MouseButton::Left, {
-                                    let entity = entity.clone();
-                                    move |_, _, cx| {
-                                        entity.update(cx, |view, cx| {
-                                            view.save_message_content(msg_id, cx);
-                                            cx.notify();
-                                        });
-                                    }
-                                }),
-                        ),
+                        div()
+                            .flex()
+                            .items_center()
+                            .gap(px(6.0))
+                            .when(prompt_picker_enabled, |this| {
+                                this.justify_between().child(
+                                    // 「选择提示词」：从提示词管理里选一条填进本
+                                    // message，也可以完全不用它、继续在上面的
+                                    // 输入框里手输。
+                                    div()
+                                        .id(SharedString::from(format!("msg-prompt-{msg_id}")))
+                                        .debug_selector({
+                                            let id = msg_id;
+                                            move || format!("PROMPT_MSG_PICKER-{id}")
+                                        })
+                                        .flex()
+                                        .items_center()
+                                        .gap(px(4.0))
+                                        .px(px(8.0))
+                                        .py(px(4.0))
+                                        .border_1()
+                                        .border_color(style.list.border)
+                                        .rounded(px(4.0))
+                                        .text_size(px(12.0))
+                                        .text_color(style.list.foreground)
+                                        .cursor(CursorStyle::PointingHand)
+                                        .hover(|s| s.bg(style.action(ActionRole::Neutral).hover))
+                                        .child(Icon::new(IconName::BookOpen).xsmall())
+                                        .child("选择提示词")
+                                        .on_mouse_down(MouseButton::Left, {
+                                            let entity = entity.clone();
+                                            move |_, window, cx| {
+                                                entity.update(cx, |view, cx| {
+                                                    view.toggle_prompt_picker(msg_id, window, cx);
+                                                });
+                                            }
+                                        }),
+                                )
+                            })
+                            // 桌面版没有提示词管理入口，不露出这个按钮（否则永远是
+                            // 一个空的提示词选择器）。保存按钮始终贴右。
+                            .when(!prompt_picker_enabled, |this| this.justify_end())
+                            .child(
+                                div()
+                                    .px(px(8.0))
+                                    .py(px(4.0))
+                                    .bg(style.action(ActionRole::Main).background)
+                                    .rounded(px(4.0))
+                                    .text_color(style.action(ActionRole::Main).foreground)
+                                    .cursor(CursorStyle::PointingHand)
+                                    .hover(|s| s.opacity(0.8))
+                                    .child(Icon::new(IconName::Check).xsmall())
+                                    .on_mouse_down(MouseButton::Left, {
+                                        let entity = entity.clone();
+                                        move |_, _, cx| {
+                                            entity.update(cx, |view, cx| {
+                                                view.save_message_content(msg_id, cx);
+                                                cx.notify();
+                                            });
+                                        }
+                                    }),
+                            ),
                     ),
             );
         }
@@ -2056,6 +2198,9 @@ impl PromptDebugger {
                     ),
             );
 
+        // 提示词选择入口只属于 Ngy Prompt Studio（桌面版没有提示词管理）。
+        let prompt_picker_enabled = prompt_library_available(self.identity);
+
         // 收集状态信息（避免在循环中同时借用 self）
         let msg_states: Vec<(u64, bool, bool)> = self
             .messages
@@ -2091,6 +2236,7 @@ impl PromptDebugger {
                 *collapsed,
                 *editing,
                 input,
+                prompt_picker_enabled,
             ));
         }
 
@@ -5446,6 +5592,47 @@ impl Render for PromptDebugger {
         }
         let picker_search_input = self.tool_picker_search_input.clone().unwrap();
 
+        // 懒初始化「选择提示词」的搜索框（同 tool picker：只建一次并回写过滤词）。
+        if self.prompt_picker_search_input.is_none() {
+            let input = cx.new(|cx| {
+                InputState::new(window, cx)
+                    .placeholder("搜索提示词名称或内容...")
+                    .default_value(self.prompt_picker_search.clone())
+            });
+            cx.subscribe_in(&input, window, |this, state, event, _window, cx| {
+                if let InputEvent::Change = event {
+                    this.prompt_picker_search = state.read(cx).value().to_string();
+                    cx.notify();
+                }
+            })
+            .detach();
+            self.prompt_picker_search_input = Some(input);
+        }
+        let prompt_picker_search_input = self.prompt_picker_search_input.clone().unwrap();
+        let prompt_picker_query = self.prompt_picker_search.trim().to_lowercase();
+        let prompt_picker_items: Vec<(i64, String, String)> = self
+            .available_prompts
+            .iter()
+            .filter(|prompt| {
+                prompt_picker_query.is_empty()
+                    || prompt.name.to_lowercase().contains(&prompt_picker_query)
+                    || prompt.content.to_lowercase().contains(&prompt_picker_query)
+            })
+            .map(|prompt| {
+                let preview = prompt
+                    .content
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                let preview = if preview.chars().count() > 80 {
+                    format!("{}…", preview.chars().take(80).collect::<String>())
+                } else {
+                    preview
+                };
+                (prompt.id, prompt.name.clone(), preview)
+            })
+            .collect();
+
         // 选择器里已经加进本页的函数：置灰并标「已添加」，同一个函数不能再选一次。
         let added_function_ids: HashSet<i64> =
             self.tool_source_functions.values().copied().collect();
@@ -5525,6 +5712,169 @@ impl Render for PromptDebugger {
                     cx,
                 )
                 .into_any_element()
+            } else {
+                div().into_any_element()
+            })
+            .child(if self.prompt_picker_target.is_some() {
+                div()
+                    .absolute()
+                    .top_0()
+                    .bottom_0()
+                    .left_0()
+                    .right_0()
+                    .bg(gpui_kit::rgba(0x00000080))
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .debug_selector(|| "PROMPT_PICKER".to_owned())
+                    .on_mouse_down(MouseButton::Left, {
+                        let entity = cx.entity();
+                        move |_, _, cx| {
+                            entity.update(cx, |view, cx| {
+                                view.prompt_picker_target = None;
+                                cx.notify();
+                            });
+                        }
+                    })
+                    .child(
+                        div()
+                            .w(px(560.0))
+                            .max_h(px(460.0))
+                            .bg(cx.theme().background)
+                            .rounded(px(12.0))
+                            .shadow_lg()
+                            .border_1()
+                            .border_color(style.list.border)
+                            .flex()
+                            .flex_col()
+                            .overflow_hidden()
+                            .on_any_mouse_down(|_, _, cx| {
+                                cx.stop_propagation();
+                            })
+                            .child(
+                                div()
+                                    .flex()
+                                    .items_center()
+                                    .justify_between()
+                                    .px(px(16.0))
+                                    .py(px(12.0))
+                                    .border_b_1()
+                                    .border_color(style.list.border)
+                                    .child(
+                                        div()
+                                            .text_size(px(16.0))
+                                            .font_weight(FontWeight::BOLD)
+                                            .child("选择提示词"),
+                                    )
+                                    .child(
+                                        div()
+                                            .cursor(CursorStyle::PointingHand)
+                                            .hover(|s| s.opacity(0.7))
+                                            .child(Icon::new(IconName::Close).small())
+                                            .on_mouse_down(MouseButton::Left, {
+                                                let entity = cx.entity();
+                                                move |_, _, cx| {
+                                                    entity.update(cx, |view, cx| {
+                                                        view.prompt_picker_target = None;
+                                                        cx.notify();
+                                                    });
+                                                }
+                                            }),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .px(px(16.0))
+                                    .py(px(12.0))
+                                    .border_b_1()
+                                    .border_color(style.list.border)
+                                    .child(
+                                        div()
+                                            .w_full()
+                                            .child(Input::new(&prompt_picker_search_input)),
+                                    ),
+                            )
+                            .child(
+                                div()
+                                    .id("prompt-library-picker-scroll")
+                                    .debug_selector(|| "PROMPT_PICKER_SCROLL".to_owned())
+                                    .flex()
+                                    .flex_col()
+                                    .flex_1()
+                                    .min_h_0()
+                                    .overflow_y_scroll()
+                                    .track_scroll(&self.prompt_picker_scroll)
+                                    .vertical_scrollbar(&self.prompt_picker_scroll)
+                                    .px(px(16.0))
+                                    .py(px(8.0))
+                                    .when(prompt_picker_items.is_empty(), |this| {
+                                        this.child(
+                                            div()
+                                                .p(px(12.0))
+                                                .text_size(px(12.0))
+                                                .text_color(style.list.muted_foreground)
+                                                .child("提示词管理里还没有可用的提示词"),
+                                        )
+                                    })
+                                    .children(prompt_picker_items.iter().map(
+                                        |(prompt_id, name, preview)| {
+                                            let prompt_id = *prompt_id;
+                                            let name = name.clone();
+                                            let preview = preview.clone();
+                                            div()
+                                                .id(SharedString::from(format!(
+                                                    "picker-prompt-{}",
+                                                    prompt_id
+                                                )))
+                                                .debug_selector({
+                                                    let id = prompt_id;
+                                                    move || format!("PROMPT_PICKER_ITEM-{id}")
+                                                })
+                                                .mb(px(8.0))
+                                                .p(px(12.0))
+                                                .border_1()
+                                                .border_color(style.list.border)
+                                                .rounded(px(6.0))
+                                                .cursor(CursorStyle::PointingHand)
+                                                .hover(|s| s.bg(style.action(ActionRole::Neutral).hover))
+                                                .on_mouse_down(MouseButton::Left, {
+                                                    let entity = cx.entity();
+                                                    move |_, window, cx| {
+                                                        entity.update(cx, |view, cx| {
+                                                            view.apply_prompt_to_message(
+                                                                prompt_id, window, cx,
+                                                            );
+                                                        });
+                                                    }
+                                                })
+                                                .child(
+                                                    div()
+                                                        .flex()
+                                                        .items_center()
+                                                        .justify_between()
+                                                        .mb(px(4.0))
+                                                        .child(
+                                                            div()
+                                                                .text_size(px(14.0))
+                                                                .font_weight(FontWeight::SEMIBOLD)
+                                                                .child(SharedString::from(
+                                                                    name.as_str(),
+                                                                )),
+                                                        ),
+                                                )
+                                                .child(
+                                                    div()
+                                                        .text_size(px(12.0))
+                                                        .text_color(style.list.muted_foreground)
+                                                        .child(SharedString::from(
+                                                            preview.as_str(),
+                                                        )),
+                                                )
+                                        },
+                                    )),
+                            ),
+                    )
+                    .into_any_element()
             } else {
                 div().into_any_element()
             })
@@ -5812,6 +6162,22 @@ mod tests {
             desktop.len(),
             2,
             "the desktop picker keeps Builtin Functions"
+        );
+    }
+
+    /// PRD「提示词工程」：提示词管理与「选择提示词」只属于 Ngy Prompt Studio；
+    /// 桌面版没有提示词管理分区，调试页也不该露出这个入口。
+    #[test]
+    fn prompt_library_entry_is_prompt_studio_only() {
+        use crate::config::AppIdentity;
+
+        assert!(
+            super::prompt_library_available(AppIdentity::NGY_PROMPT_STUDIO),
+            "Ngy Prompt Studio must expose the managed-prompt picker"
+        );
+        assert!(
+            !super::prompt_library_available(AppIdentity::HIVEGUI),
+            "the desktop app has no prompt library and must not expose the picker"
         );
     }
 
@@ -6851,10 +7217,27 @@ mod geometry_tests {
         };
         assert_eq!(cell("json:cmp:header:7"), "7");
         assert_eq!(cell("json:cmp:header:8"), "8");
-        assert!(cell("json:cmp:7:INPUT").contains("\"content\": \"prompt-7\""));
-        assert!(cell("json:cmp:8:INPUT").contains("\"content\": \"prompt-8\""));
-        assert!(cell("json:cmp:7:OUTPUT").contains("result-7"));
-        assert!(cell("json:cmp:8:OUTPUT").contains("result-8"));
+
+        // 数据单元格改用「逐行 div + 差异行高亮 + 复制按钮」渲染（单元格文本不再
+        // 进 `view_text_states`），因此改为点每个单元格的复制按钮读剪贴板，验证
+        // 每一列拿到的是自己那条记录的 JSON。
+        let mut copied = |selector: &'static str| -> String {
+            let bounds = cx
+                .debug_bounds(selector)
+                .unwrap_or_else(|| panic!("{selector} bounds missing"));
+            cx.simulate_click(bounds.center(), Modifiers::default());
+            cx.run_until_parked();
+            typed_window
+                .update(&mut cx, |_, _, cx| {
+                    cx.read_from_clipboard().and_then(|item| item.text())
+                })
+                .expect("read clipboard after cell copy click")
+                .unwrap_or_default()
+        };
+        assert!(copied("json-cmp-INPUT-1-copy").contains("\"content\": \"prompt-7\""));
+        assert!(copied("json-cmp-INPUT-2-copy").contains("\"content\": \"prompt-8\""));
+        assert!(copied("json-cmp-OUTPUT-1-copy").contains("result-7"));
+        assert!(copied("json-cmp-OUTPUT-2-copy").contains("result-8"));
 
         // 「仅看差异」：模型名相同 → 过滤「模型」行；存在差异的维度行保留。
         let only_diff = cx

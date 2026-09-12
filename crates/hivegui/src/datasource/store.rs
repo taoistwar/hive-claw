@@ -1508,6 +1508,9 @@ impl Store {
         // 否则 upsert/select 解码 GlobalConfig 时会报
         // "no column found for name: deletable"。
         Self::ensure_global_configs_deletable(&pool).await?;
+        // 兼容旧库：`prompts`（提示词管理）是 v4 之后新增的表，已标记 v4 的库
+        // 不会重跑 `create_or_upgrade_to_v4`，必须在此补建。
+        super::entity_store::ensure_prompt_tables(&pool).await?;
         let key = Self::load_or_generate_key(db_path.parent().unwrap_or(Path::new(".")))?;
         let crypto = Crypto::new(&key);
         Ok(Self {
@@ -1547,6 +1550,7 @@ impl Store {
         .execute(pool)
         .await?;
 
+        // query-plan: id=t012.global_configs.deletable_column_probe; owner_phase=US1; activation_task=T019
         let exists = sqlx::query_scalar::<_, i64>(
             "SELECT COUNT(*) FROM pragma_table_info('global_configs') WHERE name = 'deletable'",
         )

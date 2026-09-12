@@ -1926,6 +1926,15 @@ async fn seed_complete_portable_fixture(
     .execute(store.pool())
     .await
     .expect("seed GlobalConfig");
+    sqlx::query(
+        "INSERT INTO prompts (name,content,description,created_at,updated_at) \
+         VALUES ('Portable Prompt','portable prompt content','portable prompt',?,?)",
+    )
+    .bind(AT)
+    .bind(AT)
+    .execute(store.pool())
+    .await
+    .expect("seed Prompt");
     let provider_id = sqlx::query_scalar::<_, i64>(
         "INSERT INTO llm_providers (name,category,base_url,token_env,token_encrypted,created_at,updated_at) \
          VALUES ('portable-provider','openai','https://portable.invalid/v1','',?,?,?) RETURNING id",
@@ -2469,6 +2478,70 @@ async fn import_missing_manifested_entity_cleans_every_staged_and_target_byte() 
     );
 }
 
+/// 便携格式冻结之后新加的实体表（`prompts`，提示词管理）：更早版本导出的
+/// 归档里没有它，导入必须成功并把该实体当成空表；其它实体缺项仍然 fail closed
+/// （见上一个用例）。
+#[tokio::test(flavor = "current_thread")]
+async fn portable_archive_without_the_late_prompts_entity_still_imports() {
+    let workspace = TestWorkspace::new().expect("workspace");
+    let database_path = write_seed_database(&workspace).await;
+    let valid = unique_target_path(&workspace, "pre-prompts-source");
+    let passphrase = "T129-pre-prompts-passphrase";
+    BackupExporter::new(database_path)
+        .export_age(&valid, passphrase)
+        .await
+        .expect("export valid entity archive");
+
+    // 模拟「更早版本导出的归档」：清单与 tar 里都没有 prompts 实体。
+    let mut entries = read_authenticated_tar_entries(&valid, passphrase);
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(entries.get("manifest.json").expect("portable manifest"))
+            .expect("parse portable manifest");
+    let descriptors = manifest["entity_files"]
+        .as_array_mut()
+        .expect("entity descriptors");
+    let position = descriptors
+        .iter()
+        .position(|descriptor| descriptor["name"] == "prompts")
+        .expect("a current export must carry the prompts entity");
+    let path = descriptors[position]["path"]
+        .as_str()
+        .expect("entity path")
+        .to_string();
+    descriptors.remove(position);
+    assert!(entries.remove(&path).is_some());
+    entries.insert(
+        "manifest.json".into(),
+        serde_json::to_vec(&manifest).expect("encode stripped manifest"),
+    );
+
+    let archive = unique_target_path(&workspace, "pre-prompts");
+    write_authenticated_entry_map(&archive, passphrase, &entries);
+    let restored_database = BackupImporter::new(workspace.root().join("pre-prompts-staging"))
+        .import_age(
+            &archive,
+            passphrase,
+            &workspace.root().join("pre-prompts-target"),
+        )
+        .await
+        .expect("an archive predating `prompts` must still import");
+
+    let restored = Store::open_local(StoreOpenOptions::new(
+        &restored_database,
+        restored_database
+            .parent()
+            .expect("restore parent")
+            .join("plugins"),
+    ))
+    .await
+    .expect("open restored Store");
+    let prompts = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM prompts")
+        .fetch_one(restored.pool())
+        .await
+        .expect("restored prompts table");
+    assert_eq!(prompts, 0, "the synthesized prompts entity must stay empty");
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn import_rejects_noncanonical_or_mismatched_portable_manifest_fields() {
     let workspace = TestWorkspace::new().expect("workspace");
@@ -2609,7 +2682,7 @@ async fn portable_manifest_carries_current_format_and_complete_entity_inventory(
     assert_eq!(manifest.schema_version, 4);
     assert_eq!(manifest.format, "hivegui-backup");
     assert_eq!(manifest.format_version, 3);
-    assert_eq!(manifest.entity_files.len(), 22);
+    assert_eq!(manifest.entity_files.len(), 23);
     assert!(manifest.artifacts.is_empty());
     assert!(chrono::DateTime::parse_from_rfc3339(&manifest.exported_at).is_ok());
 }
@@ -2817,7 +2890,7 @@ async fn every_portable_entity_relation_sensitive_field_and_managed_wasm_round_t
     let descriptors = source_manifest["entity_files"]
         .as_array()
         .expect("complete entity descriptor array");
-    assert_eq!(descriptors.len(), 22);
+    assert_eq!(descriptors.len(), 23);
     for descriptor in descriptors {
         let name = descriptor["name"].as_str().expect("entity name");
         let count = descriptor["count"].as_u64().expect("entity row count");
@@ -3032,6 +3105,7 @@ async fn portable_archive_is_manifested_entity_json_without_a_sqlite_or_local_ke
         "llm_providers",
         "models",
         "plugins",
+        "prompts",
         "skills",
         "tags",
         "tools",

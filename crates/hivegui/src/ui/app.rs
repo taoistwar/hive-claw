@@ -19,8 +19,8 @@ use crate::runtime::{FoundationRuntimeComposition, LocalExecutionAdapter};
 use crate::ui::{
     ai_view::AiView, category_view::CategoryView, function_view::FunctionView,
     global_config::GlobalConfigView, home::HomeView, llm_config::LLMConfigView,
-    prompt_debugger::PromptDebugger, sidebar_nav::SidebarNav, theme_contrast,
-    utility_view::UtilityView,
+    prompt_debugger::PromptDebugger, prompt_library_view::PromptLibraryView,
+    sidebar_nav::SidebarNav, theme_contrast, utility_view::UtilityView,
 };
 
 /// Error returned when navigation cannot proceed.
@@ -425,6 +425,12 @@ const PROMPT_STUDIO_SECTIONS: &[PromptStudioSection] = &[
         label: "提示词调试",
         icon: IconName::FlaskConical,
     },
+    // 提示词管理紧挨提示词调试：本页的 message 可以直接选用这里的提示词。
+    PromptStudioSection {
+        id: "prompts",
+        label: "提示词管理",
+        icon: IconName::BookOpenText,
+    },
     PromptStudioSection {
         id: "llm",
         label: "LLM 配置",
@@ -523,6 +529,7 @@ pub struct PromptStudioRoot {
     function_view: Entity<FunctionView>,
     global_config: Entity<GlobalConfigView>,
     category_view: Entity<CategoryView>,
+    prompt_library: Entity<PromptLibraryView>,
     /// `on_window_should_close` 是否已经挂到本窗口上（只需挂一次）。
     window_close_hook_registered: bool,
 }
@@ -555,6 +562,7 @@ impl PromptStudioRoot {
         });
         let function_view = cx.new(|cx| FunctionView::new_prompt_studio(store.clone(), cx));
         let category_view = cx.new(|cx| CategoryView::new(store.clone(), cx));
+        let prompt_library = cx.new(|cx| PromptLibraryView::new(store.clone(), cx));
         Self {
             active: 0,
             prompt_debugger,
@@ -562,6 +570,7 @@ impl PromptStudioRoot {
             function_view,
             global_config,
             category_view,
+            prompt_library,
             window_close_hook_registered: false,
         }
     }
@@ -673,6 +682,7 @@ impl Render for PromptStudioRoot {
         // 顺序时，正文不会和左侧导航错位。
         let body = match PROMPT_STUDIO_SECTIONS[self.active].id {
             "prompt" => self.prompt_debugger.clone().into_any_element(),
+            "prompts" => self.prompt_library.clone().into_any_element(),
             "llm" => self.llm_config.clone().into_any_element(),
             "functions" => self.function_view.clone().into_any_element(),
             "global" => self.global_config.clone().into_any_element(),
@@ -1060,12 +1070,28 @@ mod tests {
             .iter()
             .map(|section| section.id)
             .collect::<Vec<_>>();
-        assert_eq!(ids, ["prompt", "llm", "functions", "category", "global"]);
+        assert_eq!(
+            ids,
+            [
+                "prompt",
+                "prompts",
+                "llm",
+                "functions",
+                "category",
+                "global"
+            ]
+        );
         assert!(
             PROMPT_STUDIO_SECTIONS
                 .iter()
                 .any(|section| section.id == "functions" && section.label == "函数管理"),
             "左侧菜单必须包含「函数管理」分区"
+        );
+        assert!(
+            PROMPT_STUDIO_SECTIONS
+                .iter()
+                .any(|section| section.id == "prompts" && section.label == "提示词管理"),
+            "左侧菜单必须包含「提示词管理」分区"
         );
 
         // 正文按 id 分派，重复 id 会让某个分区永远打不开。

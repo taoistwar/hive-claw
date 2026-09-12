@@ -73,6 +73,7 @@ const ENTITY_TABLES: &[&str] = &[
     "llm_providers",
     "models",
     "plugins",
+    "prompts",
     "skills",
     "tags",
     "tools",
@@ -80,6 +81,10 @@ const ENTITY_TABLES: &[&str] = &[
     "workflow_nodes",
     "workflows",
 ];
+
+/// `ENTITY_TABLES` 里**在便携格式冻结之后**才加入的实体：更早版本导出的归档
+/// 不含这些实体文件，导入时按当前列集补一个空 body。
+const POST_FORMAT_ENTITIES: &[&str] = &["prompts"];
 
 static FROZEN_DATABASES: OnceLock<Mutex<BTreeSet<PathBuf>>> = OnceLock::new();
 static AGE_KDF_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -768,6 +773,14 @@ fn entity_columns(table: &str) -> &'static [&'static str] {
             "updated_at",
             "deleted_at",
         ],
+        "prompts" => &[
+            "id",
+            "name",
+            "content",
+            "description",
+            "created_at",
+            "updated_at",
+        ],
         "functions" => &[
             "id",
             "identifier",
@@ -912,6 +925,7 @@ async fn fetch_entity_rows(
         "tags" => sqlx::query("SELECT id,name,color,normalized_name,created_at,updated_at FROM tags ORDER BY id").fetch_all(pool).await,
         "data_sources" => sqlx::query("SELECT id,name,host,port,username,encrypted_password,created_at,updated_at FROM data_sources ORDER BY id").fetch_all(pool).await,
         "plugins" => sqlx::query("SELECT id,identifier,name,description,manifest,version,author,repository_url,s3_key,sha256,size_bytes,runtime,category_id,capabilities,resource_limits,row_revision,created_at,updated_at,deleted_at FROM plugins ORDER BY id").fetch_all(pool).await,
+        "prompts" => sqlx::query("SELECT id,name,content,description,created_at,updated_at FROM prompts ORDER BY id").fetch_all(pool).await,
         "functions" => sqlx::query("SELECT id,identifier,name,description,kind,input_schema,output_schema,plugin_id,plugin_export,category_id,required_capabilities,created_at,updated_at FROM functions ORDER BY id").fetch_all(pool).await,
         "workflows" => sqlx::query("SELECT id,identifier,name,description,timeout_ms,category_id,input_schema,start_description,output_schema,required_capabilities,created_at,updated_at FROM workflows ORDER BY id").fetch_all(pool).await,
         "workflow_nodes" => sqlx::query("SELECT id,workflow_id,node_key,node_type,function_id,position_x,position_y,node_config,created_at FROM workflow_nodes ORDER BY id").fetch_all(pool).await,
@@ -2280,7 +2294,14 @@ fn decompress_and_parse<R: Read>(reader: R) -> Result<ParsedArchive, ImportError
         .map(|entry| entry.name.clone())
         .collect::<BTreeSet<_>>();
     let entity_mode = database.is_none();
-    if entity_mode && descriptor_names != expected_names {
+    // 归档只允许携带 `ENTITY_TABLES` 里的实体。唯一的例外是 `prompts` 这类
+    // **格式冻结之后新加的表**：更早版本导出的归档里没有它们，缺失的实体在
+    // `validate_and_upgrade_portable_entities` 里按空的当前列集补齐。除白名单
+    // 之外的缺项一律拒绝，避免把截断/伪造的清单当成「全部为空」导入。
+    let missing_is_allowlisted = expected_names
+        .difference(&descriptor_names)
+        .all(|name| POST_FORMAT_ENTITIES.contains(&name.as_str()));
+    if entity_mode && (!descriptor_names.is_subset(&expected_names) || !missing_is_allowlisted) {
         return Err(ImportError::InvalidManifest(
             "portable entity inventory mismatch".into(),
         ));
@@ -2374,8 +2395,27 @@ fn decompress_and_parse<R: Read>(reader: R) -> Result<ParsedArchive, ImportError
 
 fn validate_and_upgrade_portable_entities(
     format_version: u32,
-    entities: &mut [PortableEntityBody],
+    entities: &mut Vec<PortableEntityBody>,
 ) -> Result<(), ImportError> {
+    // Transparent upgrade: archives written by a build that predates an entity
+    // table (e.g. `prompts`, 提示词管理) carry fewer entity files. Synthesize an
+    // empty body with the current column list so the importer can keep requiring
+    // the exact current inventory.
+    for table in ENTITY_TABLES {
+        if entities.iter().any(|entity| entity.entity == *table) {
+            continue;
+        }
+        entities.push(PortableEntityBody {
+            schema_version: ARCHIVE_SCHEMA_VERSION,
+            entity: (*table).to_string(),
+            columns: entity_columns(table)
+                .iter()
+                .map(|column| (*column).to_string())
+                .collect(),
+            rows: Vec::new(),
+        });
+    }
+
     // Transparent upgrade: archives written before `llm_presets.reasoning_effort`
     // existed carry the older column list. Insert the missing nullable column
     // (as `Null`) so the importer can keep requiring the exact current column
@@ -3094,6 +3134,9 @@ async fn execute_portable_insert(
         }
         "plugins" => {
             "INSERT INTO plugins (id,identifier,name,description,manifest,version,author,repository_url,s3_key,sha256,size_bytes,runtime,category_id,capabilities,resource_limits,row_revision,created_at,updated_at,deleted_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"
+        }
+        "prompts" => {
+            "INSERT INTO prompts (id,name,content,description,created_at,updated_at) VALUES (?,?,?,?,?,?)"
         }
         "functions" => {
             "INSERT INTO functions (id,identifier,name,description,kind,input_schema,output_schema,plugin_id,plugin_export,category_id,required_capabilities,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)"

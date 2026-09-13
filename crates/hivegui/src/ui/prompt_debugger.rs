@@ -505,22 +505,27 @@ impl PromptDebugger {
 
     /// 异步加载上一次保存的左侧 LLM 设定并回填表单。
     ///
-    /// 读取到快照后先写回各字段，再触发 `load_data` 重新拉取
-    /// Preset/Model 列表（列表加载完成后会根据回填的选中 ID 重建下拉）。
+    /// 读取到快照后先写回各字段，再触发 `load_data` 拉取 Preset/Model
+    /// 列表（列表加载完成后会根据回填的选中 ID 重建下拉）。
+    ///
+    /// **没有历史快照时同样要拉列表**：以前这里只在「读到快照且能反序列化」
+    /// 的分支里调 `load_data`，全新用户（`global_configs` 里还没有
+    /// `prompt_debugger_state`）永远拿不到 Preset/Model，下拉是空的。
     fn load_settings(&mut self, cx: &mut Context<Self>) {
         let store = self.store.read(cx).clone();
         let key = PROMPT_DEBUGGER_SETTINGS_KEY.to_string();
         cx.spawn(async move |this, cx| {
             let saved = store.get_global_config(&key).await.ok().flatten();
-            if let Some(json) = saved
-                && let Ok(settings) = serde_json::from_str::<SavedDebuggerSettings>(&json)
-            {
-                _ = this.update(cx, |this, cx| {
+            let settings = saved
+                .as_deref()
+                .and_then(|json| serde_json::from_str::<SavedDebuggerSettings>(json).ok());
+            _ = this.update(cx, |this, cx| {
+                if let Some(settings) = settings {
                     this.apply_saved_settings(settings);
-                    this.load_data(cx);
-                    cx.notify();
-                });
-            }
+                }
+                this.load_data(cx);
+                cx.notify();
+            });
         })
         .detach();
     }
@@ -6487,6 +6492,67 @@ mod geometry_tests {
             })
             .expect("read model focus state");
         assert!(!model_is_focused, "disabled model selector accepted focus");
+    }
+
+    /// 首次打开、还没有任何已保存设定时，Preset 下拉也必须拿到数据。
+    ///
+    /// 回归：`load_settings` 曾经只在「读到已保存快照」的分支里触发
+    /// `load_data`，全新用户（`global_configs` 里没有 `prompt_debugger_state`）
+    /// 的 Preset/Model 下拉永远是空的。
+    #[gpui_kit::test]
+    fn preset_list_loads_on_first_open_without_saved_settings(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_kit::component::theme::init(cx);
+            gpui_kit::component::init(cx);
+        });
+        // sqlx 的连接 worker 是独立线程，会回调 gpui 的执行器调度异步任务的
+        // 唤醒；不放开 parking 时测试调度器会把它判成「不确定的跨线程调度」。
+        cx.executor().allow_parking();
+
+        let temp_dir = tempfile::tempdir().expect("create temporary data directory");
+        let runtime = tokio::runtime::Runtime::new().expect("create Tokio runtime");
+        let store = runtime
+            .block_on(Store::new(temp_dir.path()))
+            .expect("create test store");
+        let llm_store = LlmStore::new(store.pool().clone(), store.crypto().clone());
+        runtime
+            .block_on(llm_store.migrate())
+            .expect("migrate llm tables");
+        let _runtime_guard = runtime.enter();
+        let store = cx.new(|_| store);
+
+        let window = cx.open_window(size(px(1200.0), px(700.0)), move |_, cx| {
+            PromptDebugger::new(
+                cx,
+                store.clone(),
+                llm_store.clone(),
+                crate::config::AppIdentity::HIVEGUI,
+            )
+        });
+        cx.run_until_parked();
+
+        // 读取 `global_configs` + `list_presets` 是两跳异步：轮询到非空为止。
+        let mut preset_count = 0usize;
+        for _ in 0..200 {
+            cx.run_until_parked();
+            preset_count = window
+                .update(cx, |view, _, _| view.presets.len())
+                .expect("read preset list");
+            if preset_count > 0 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+
+        assert!(
+            preset_count > 0,
+            "missing saved settings must not leave the preset selector empty"
+        );
+
+        window
+            .update(cx, |_, window, _| window.remove_window())
+            .expect("remove window");
+        cx.run_until_parked();
     }
 
     #[gpui_kit::test]

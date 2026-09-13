@@ -616,9 +616,15 @@ fn prompt_studio_nav_button(
             // 重新进入「提示词调试」分区时重新读取运行期开关：用户可能刚在
             // 「全局配置」里改过「查看/对比是否使用独立窗口」，不重读就要重启
             // 本应用才生效。
+            //
+            // Preset/Model 列表同理由此刷新：用户可能刚在「LLM 配置」页
+            // 增删过档位/模型，回到本页应立刻在下拉里看到（桌面版
+            // `UtilityView::refresh_prompt_debugger` 同一行为）。
             if changed && section.id == "prompt" {
-                this.prompt_debugger
-                    .update(cx, |view, cx| view.reload_detached_window_settings(cx));
+                this.prompt_debugger.update(cx, |view, cx| {
+                    view.reload_presets_and_models(cx);
+                    view.reload_detached_window_settings(cx);
+                });
             }
             cx.notify();
         }))
